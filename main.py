@@ -12,8 +12,6 @@ led_onboard.value(1)
 
 uart = machine.UART(0, 9600, tx=Pin(12), rx=Pin(13), bits=8, parity=None, stop=1)
 
-
-
 led_ok = machine.PWM(machine.Pin(5))
 led_err = machine.PWM(machine.Pin(6))
 draw_sw = machine.Pin(1, machine.Pin.IN, machine.Pin.PULL_UP)
@@ -25,8 +23,6 @@ led_err.duty_u16(0)
 NUM_LEDS = 57
 #arr = array.array("I", [0 for _ in range(NUM_LEDS)])
 #curve = [int((256 ** (1 - (i/NUM_LEDS)))- 1) for i in range(NUM_LEDS)]
-
-
 
 #sideset_init=(PIO.OUT_LOW,) * 2, out_init=rp2.PIO.OUT_HIGH
 
@@ -62,6 +58,12 @@ class LED_admin():
         self.z_01 = [i for i in range(7, 23)] # AUX T
         self.z_02 = [i for i in range(23, 31)] # AUX L
         self.z_ff = [i for i in range(32, 46+1)] # JM_SPOT
+        self.z_all = self.z_00 + self.z_01 + self.z_02 + self.z_ff
+        self.sparkel_level = None
+        self.sparkel_enable = True
+        self.global_brightness = (1, 1, 1)
+        self.daylight_factor = (1, 1, 1)
+        
         
     def rgb_formatter(self, data):
         '''Array of 3 RGB data converted to fit Neopixel format (GgRrBb where character-pair is 1 byte size). Error return -1
@@ -72,55 +74,117 @@ class LED_admin():
         else:
             return -1
         
+    def rgb_reformatter(self, data):
+        '''Opposite of rgb_formatter. '''
+        rgb_list = []
+        if isinstance(data, (int, str)):
+            s = ('000000' + str(data)[2:])[-6:] # Ensuring string lenght = 6.
+            
+            rgb = (int(s[2]+s[3], 16), int(s[0]+s[1], 16), int(s[4]+s[5], 16))
+            print(f'rgb_reformatter::: data: {data}, type: {type(data)}, s: {s}, rgb: {rgb}')
+            return rgb
+
+        if isinstance(data, (list, tuple)):
+            for d in data:
+                assert isinstance(d, int)
+                s = ('000000' + str(hex(d)))[-6:] # Ensuring string lenght = 6.
+                rgb = (int(s[2]+s[3], 16), int(s[0]+s[1], 16), int(s[4]+s[5], 16))
+                rgb_list.append(rgb)
+            return rgb_list
+        print(f'rgb_reformatter:: data: {data}, type: {type(data)}')
+        return -1
+                      
+    def validate_format(self, data):
+        print(f'validate_format:: data: {data}, type: {type(data)}')
+        if isinstance(data, str):
+            print(f'data {data}')
+            assert len(data) == 6
+            rgb = self.rgb_reformatter(data)
+            assert rgb != -1
+            return rgb
+        if isinstance(data, (list, tuple)):
+            assert len(data) == 3
+            return data
+        assert True == False
+            
+        
     def output_to_chain(self, data):
         sm.put(data, 8)
         
-    def set_brightness(self, brightness=1):
-        assert brightness >= 0 and brightness <= 1
-        for i in range(self.NUM_LEDS):
-            self.arr[i] = int(self.arr[i] * brightness)
-            self.arr_opened[i] = int(self.arr_opened[i] * brightness)
-            
+    
+    def rgb_scaling(self, scale_factor, s, e):
+        print(f'rgbscaling scalefactor {scale_factor}')
+        assert len(scale_factor) == 3
+        assert scale_factor != -1
+        for b in scale_factor:
+            assert b >= 0 
+        for i in range(s, e):
+            #self.arr[i] = int(self.arr[i] * brightness)
+            #self.arr_opened[i] = int(self.arr_opened[i] * scale_factor)
+            rgb = self.rgb_reformatter(self.arr[i])
+            rgb_new = list(map(lambda x, y: min((int(x * y), 255)), rgb, scale_factor))
+            value_new = self.rgb_formatter(rgb_new)            
+            #self.arr[i] = value_new
+        self.output_to_chain(value_new)
+
+
+    def set_brightness(self, brightness=(1,1,1), s=None, e=None):
+        if s == None:
+            s = 0
+            e = (NUM_LEDS-1)
+        elif e == None:
+                e = (NUM_LEDS-1)
+                
+        self.global_brightness = self.validate_format(brightness)
+        print(f'set_brightness:: global_brightness: {self.global_brightness}, brightness: {brightness}, ')
+        self.rgb_scaling(self.global_brightness, s=s, e=e)
         
+    def set_daylight(self, brightness=(1,1,1), s=None, e=None):
+        if s == None:
+            s = 0
+            e = (NUM_LEDS-1)
+        elif e == None:
+                e = (NUM_LEDS-1)
+        self.rgb_scaling(brightness, s=s, e=e)        
+                         
         
-    def set_zones(self, z0=(0,0,0), z1=(0,0,0), z2=(0,0,0), z3=(0,0,0), all_zones=None):    #(255<<16) + (255<<8) + 255
+    def set_zones(self, rgb, zones=('all')):    #(255<<16) + (255<<8) + 255
         self.arr[2] = self.rgb_formatter((255, 255, 255))
         self.arr[1] = self.rgb_formatter((10, 7, 4))
         self.arr[0] = self.rgb_formatter((10, 7, 4))
-
-        for i in self.z_00:
-            if all_zones == None:
-                self.arr[i] = self.rgb_formatter(z0)
-            else:
-                self.arr[i] = self.rgb_formatter(all_zones)
+        print(f'zones: {zones}')
+        
+        if 'all' in zones:
+            print(f'all zones: {rgb}')
+            for i in self.z_all:
+                self.arr[i] = self.rgb_formatter(rgb)
+        if 'z_00' in zones:
+            print(f' z_00: {rgb}')
+            for i in self.z_00:
+                self.arr[i] = self.rgb_formatter(rgb)
+        if 'z_01' in zones:
+            print(f' z1: {rgb}')
+            for i in self.z_01:
+                self.arr[i] = self.rgb_formatter(rgb)
+        if 'z_02' in zones:
+            print(f' z2: {rgb}')
+            for i in self.z_02:
+                self.arr[i] = self.rgb_formatter(rgb)
+        if 'z_ff' in zones:
+            print(f' z_ff: {rgb}')
+            for i in self.z_ff:
+                self.arr[i] = self.rgb_formatter(rgb)
             
-        for i in self.z_01:
-            if all_zones == None:
-                self.arr[i] = self.rgb_formatter(z1)
-            else:
-                self.arr[i] = self.rgb_formatter(all_zones)
-
-        for i in self.z_02:
-            if all_zones == None:
-                self.arr[i] = self.rgb_formatter(z2)
-            else:
-                self.arr[i] = self.rgb_formatter(all_zones)
-
-        for i in self.z_ff:
-            if all_zones == None:
-                self.arr[i] = self.rgb_formatter(z3)
-            else:
-                self.arr[i] = self.rgb_formatter(all_zones)
-
-        rand_vec = ((255, 180, 20), (180, 255, 20), (255, 20, 180))
+            
+        rand_vec = ((255, 220, 20), (180, 200, 40), (255, 60, 180), (255, 220, 240))
+        n = len(rand_vec)
         self.arr_opened = self.arr[:]
-        self.arr_opened[11] = self.rgb_formatter(rand_vec[random.randrange(3)])
-        self.arr_opened[12] = self.rgb_formatter(rand_vec[random.randrange(3)])
-        self.arr_opened[13] = self.rgb_formatter(rand_vec[random.randrange(3)])
+        self.arr_opened[11] = self.rgb_formatter(rand_vec[random.randrange(n)])
+        self.arr_opened[12] = self.rgb_formatter(rand_vec[random.randrange(n)])
+        self.arr_opened[13] = self.rgb_formatter(rand_vec[random.randrange(n)])
         self.output_to_chain(self.arr)
         
-           
-        
+                   
     def gradient_former(self, s=0, e=8, rgb=(0,80,255)):
         '''Implementing a gradient on a subset of the LED chain, defined by start and end as well as start RGB value.'''
         assert len(rgb) == 3
@@ -142,13 +206,57 @@ class LED_admin():
         self.arr_opened[12] = self.rgb_formatter((random.randrange(85)*2, random.randrange(85)*3, random.randrange(85)*2))
         self.arr_opened[13] = self.rgb_formatter((random.randrange(85)*3, random.randrange(85)*2, random.randrange(85)*2))    
         self.output_to_chain(self.arr_opened)
+        
+    def sparkel(self, f='h', l='h', s='h'):
+        new_freq = 2
+        freq_list_full = (2.4, 2.2, 2, 1.64, 1.25, 1.117, 1, 0.8, 0.5, 0.33, 0.1)
+        freq_list = freq_list_full[:]
+        def sparkel_func(timer):
+            #print(random.randrange(NUM_LEDS))
+            level = self.sparkel_level                        
+            if level == None:
+                freq_list = freq_list_full
+            if level == 'Low':
+                freq_list = freq_list_full[3:]
+            if level == 'Medium':
+                freq_list = freq_list_full[-3:]
+            if level == 'High':
+                freq_list = freq_list_full[2:-2]
+            if draw_sw.value() == 0:
+                arr_copy = self.arr[:]
+                bling = (255, 220, 160)
+                rand_index = random.randrange(self.NUM_LEDS) # Btw 0 and NUM_LEDS (incl)
+                rand_len = 2 + random.randrange(20) # Btw 2 and 22 (incl)
+                rand_time = 4 + random.randrange(12) # Btw 4 and 16 (incl)
+                for i in range(rand_len): # Btw 2 and 22 (incl)
+                    ii = int(i/4 + 1)
+                    rand_value = (bling[random.randrange(3)]//ii, bling[random.randrange(3)]//ii,bling[random.randrange(3)]//ii)
+                    rand_index_mult = random.randrange(self.NUM_LEDS)
+                    #arr_copy[rand_index_mult] = rgb_formatter(rand_value)
+                    arr_copy[rand_index] = self.rgb_formatter(rand_value) # Btw 0 and NUM_LEDS (incl)
+                    #arr_copy[0] = pixels.rgb_formatter(rand_value)
+                    self.output_to_chain(arr_copy)
+                    utime.sleep_ms(rand_time) # Btw 4 and 16 (incl)
+                self.output_to_chain(self.arr)
+                new_freq = freq_list[random.randrange(len(freq_list))]
+                self.sparkel_timer.init(freq=new_freq, mode=Timer.PERIODIC, callback=sparkel_func)
+        self.sparkel_timer = Timer()
+        self.sparkel_timer.init(freq=2, mode=Timer.PERIODIC, callback=sparkel_func) 
+    
     
 
 
 pixels = LED_admin()
-pixels.set_zones(all_zones=(140,0,60))
+pixels.set_zones(rgb=(100,100,100), zones='all')
 #pixels.gradient_former(s=0, e=40)
-#pixels.set_brightness(0.2)
+#pixels.set_brightness(brightness=(5, 0.6, 5), s=0, e=8)
+#pixels.set_brightness(brightness=(5, 0.6, 0.1), s=10, e=40)
+#pixels.set_brightness(brightness=(0.1, 0.6, 5), s=38, e=45)
+#pixels.set_brightness(brightness=(0.8, 4, 0.4), s=45, e=47)
+#pixels.set_zones(rgb=(200,255,50), zones='z_ff')
+
+pixels.sparkel()
+
 
 drawer_opened = 0
 
@@ -194,6 +302,8 @@ MSG_SET_NOTP_0 = "AT+NOTP0"
 MSG_SET_NOTP_1 = "AT+NOTP1"
 
 
+    
+    
 message = MSG_GET_MODE
 uart.write(message.encode('ascii'))
 
@@ -231,36 +341,38 @@ def decode_bt_data(data):
     print(f'arr: {arr}')
     return arr
 
+ABSOLUTE_INDEX_ID = 'AIX000'
+ZONE_INDEX_ID = 'ZIX000'
+GRADIENT_ID = 'GRA000'
+TIME_SYNC_ID = 'TSY000'
+BRIGHTNESS_ID = 'BRI000'
+DAYLIGHT_ID = 'DAL000'
 
-def bt_data_processing(data):
-    print(f'processing {data}')
-    
-    
-    
-def sparkel_func(timer):
-    #print(random.randrange(NUM_LEDS))
-    freq_list = (2.4, 2.2, 2, 1.  , 0.5 , 0.33, 1.25, 1.117, 1.64)
-    if draw_sw.value() == 0:
-        arr_copy = pixels.arr[:]
-        bling = (255, 220, 160)
-        rand_index = random.randrange(NUM_LEDS)
-        for i in range(24):
-            ii = int(i/4 + 1)
-            rand_value = (bling[random.randrange(3)]//ii, bling[random.randrange(3)]//ii,bling[random.randrange(3)]//ii)
-            rand_index_mult = random.randrange(NUM_LEDS)
-            #arr_copy[rand_index_mult] = rgb_formatter(rand_value)
-            arr_copy[rand_index] = pixels.rgb_formatter(rand_value)
-            arr_copy[0] = pixels.rgb_formatter(rand_value)
-            sm.put(arr_copy, 8)
-            utime.sleep_ms(6)
-        sm.put(pixels.arr, 8)
-        new_freq = freq_list[random.randrange(len(freq_list))]
-        sparkel_timer.init(freq=new_freq, mode=Timer.PERIODIC, callback=sparkel_func) 
-    
+def bt_data_processing(payload):
+    d = str(payload)[2:-1].split(':')
+    print(f'processing payload: {payload}, d: {d}')
+    command = d[0]
+    data = d[1]
+
+    if ABSOLUTE_INDEX_ID in command:
+        pass
+    if ZONE_INDEX_ID in command:
+        pass
+    if GRADIENT_ID in command:
+        pass
+    if TIME_SYNC_ID in command:
+        pass
+    if BRIGHTNESS_ID in command:
+        hexval = pixels.rgb_reformatter(data)
+        print(f'bt_data_processing:: hexval: {hexval}')
+        floatval = list(map(lambda x: ((x)/128), hexval))
+        print(f'bt_data_processing:: hexval: {hexval}, floatval: {floatval}')
+        pixels.set_brightness((data))
+    if DAYLIGHT_ID in command:
+        pass
     
 
-sparkel_timer = Timer()
-sparkel_timer.init(freq=2, mode=Timer.PERIODIC, callback=sparkel_func)    
+    
     
     
 while True:
@@ -298,7 +410,7 @@ while True:
                 is_MAC = True
                 is_connected = False
                 payload = rx_data[:-len(disconnect_syntax)]
-                print(f'payload: {payload}')
+                print(f'payload raw: {payload}')
                 payload_list.append(payload)
                 rx_data = bytes()
         if not is_connected and is_MAC:
