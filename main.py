@@ -57,13 +57,14 @@ class Clock():
         self.tick_quarter = 0
         self.sync_buffer = 0
         self.sec_counter = 0
+        self.display_pwm = 0xffff
+        self.enable_display_daylight_adjustment = True
         
     def time_formatter(self, ticks):
         assert ticks <= (24 * 60)
         h = '00' + str((ticks) // 60)
         m = '00' + str((ticks) % 60)
         t = h[-2:] + m[-2:]
-        #print(f'tick: {ticks}, h: {h}, m: {m}, t: {t}')
         return t
     
     
@@ -72,9 +73,7 @@ class Clock():
             if self.tick_quarter == 0:
                 self.ticks = (self.ticks + 1) % (24 * 60)
                 time_formatted = self.time_formatter(self.ticks)                    
-                #print(time_formatted)
-                cd.transmit(time_formatted, red=0, pwm_duty = (0xffff//2))
-            #print(self.ticks)
+                cd.transmit(time_formatted, red=0, pwm_duty = (self.display_pwm//1))
             self.tick_quarter = (self.tick_quarter + 1) % 60
         self.sparkel_timer = Timer()
         self.sparkel_timer.init(freq=1, mode=Timer.PERIODIC, callback=ticker_func)  
@@ -96,7 +95,20 @@ class Clock():
         self.ticks = ticks
         self.tick_quarter = tick_quarter
         time_formatted = self.time_formatter(self.ticks)
-        cd.transmit(time_formatted, red=0, pwm_duty = (0xffff//1))
+        cd.transmit(time_formatted, red=0, pwm_duty=(self.display_pwm//1))
+        
+    def set_pwm(self, data):
+        pwm = int(data)
+        assert (data >= 0) and (data <= 0xffff)
+        self.display_pwm = data
+        time_formatted = self.time_formatter(self.ticks)
+        cd.transmit(time_formatted, red=0, pwm_duty = (self.display_pwm//1))
+        print(f'PWM set to: {data}')
+        
+    def custom_write(self, data, pwm=None):
+        if pwm != None:
+            self.set_pwm(pwm)
+        cd.transmit(data, red=0, pwm_duty=self.display_pwm//1)
         
         
     
@@ -134,16 +146,12 @@ class LED_admin():
     def rgb_reformatter(self, data):
         '''Opposite of rgb_formatter. '''
         if isinstance(data, int):
-            s = ('000000' + str(hex(data)[2:]))[-6:] # Ensuring string lenght = 6.  
-            #print(f'rgb_reformatter:: isinstance:: {type(data)}, data: {data}, s: {s}')         
+            s = ('000000' + str(hex(data)[2:]))[-6:] # Ensuring string lenght = 6.      
         elif isinstance(data, str):
             s = ('000000' + data)[-6:]
-            #print(f'rgb_reformatter:: isinstance:: {type(data)}, data: {data}, s: {s}')   
         else:
-            #print(f'rgb_reformatter:: data: {data}, type: {type(data)}')
             raise ValueError
         rgb = (int(s[2]+s[3], 16), int(s[0]+s[1], 16), int(s[4]+s[5], 16))
-        #print(f'rgb_reformatter:: data: {data}, {hex(data)}, type: {type(data)}, s: {s}, rgb: {rgb}')
         return rgb
 
     def output_to_chain(self, data):
@@ -157,13 +165,11 @@ class LED_admin():
             s1 = str(hex(min(int(int(s[2:4], 16) * (self.brightness_list[1] / 127) * (self.daylight_list[1] / 255)), 255)))[2:]
             s2 = str(hex(min(int(int(s[4:6], 16) * (self.brightness_list[2] / 127) * (self.daylight_list[2] / 255)), 255)))[2:]
             self.arr[i]  = int(('00' + s0)[-2:] + ('00' + s1)[-2:] + ('00' + s2)[-2:], 16)
-            #print(f'rgb_scaling:: s: {s}, s0: {s0}, s1: {s1}, s2: {s2}, new: {self.arr[i]}')
 
     def set_brightness(self, brightness='7f7f7f'):
         self.brightness_factor = brightness
         brightness_reformed = self.rgb_reformatter(brightness)
         assert brightness_reformed != -1
-        #print(f'set_brightness:: brightness: {brightness}, brightness_reformed: {brightness_reformed}')
         self.brightness_list = brightness_reformed
         self.rgb_scaling()
         self.output_to_chain(self.arr)
@@ -175,6 +181,10 @@ class LED_admin():
         self.daylight_list = brightness_reformed
         self.rgb_scaling()
         self.output_to_chain(self.arr)
+        if clock.enable_display_daylight_adjustment:
+            pwm_adj = (int(brightness, 16) & 0x00ffff) | 0b11
+            print(f'set_daylight:: pwm_adj: {pwm_adj}, {hex(pwm_adj)}')
+            clock.set_pwm(pwm_adj)
 
 
     def drawer_closed(self):
@@ -191,7 +201,6 @@ class LED_admin():
         print('print_list::\n')
         print(self.__dict__)
         for ix, dx in enumerate(data):
-            #print(ix, dx)
             a = self.rgb_reformatter(self.arr[ix])
             b = self.rgb_reformatter(self.rgb_list[ix])
             print(f'    arr: {a}, rgb: {b}')
@@ -202,15 +211,14 @@ class LED_admin():
         elif isinstance(rgb_str, str):
             rgb = int(rgb_str, 16)
         else:
-            #print(f'rgb_reformatter:: data: {data}, type: {type(data)}')
             raise ValueError        
         return rgb
 
     def set_absolute(self, start, end, rgb_str):
         rgb = self.insist_int(rgb_str)
         for i in range(start, end):
-            self.rgb_list[i] = rgb
-            #print(f'set_absolute:: {i}, {self.arr[i]}')
+            if i <= NUM_LEDS:
+                self.rgb_list[i] = rgb
         self.rgb_scaling()
         self.output_to_chain(self.arr)
 
@@ -218,7 +226,6 @@ class LED_admin():
         rgb = self.insist_int(rgb_str)
         for z in self.z_list[zone_nr]:
             self.rgb_list[z] = rgb
-            #print(f'set_zone:: {zone_nr}-{z}, arr: {self.arr[z]}, rgb_list: {self.rgb_list[z]}')
         self.rgb_scaling()
         self.output_to_chain(self.arr)
 
@@ -227,7 +234,6 @@ class LED_admin():
         freq_list_full = (2.4, 2.2, 2, 1.64, 1.25, 1.117, 1, 0.8, 0.5, 0.33, 0.1)
         freq_list = freq_list_full[:]
         def sparkel_func(timer):
-            #print(random.randrange(NUM_LEDS))
             level = self.sparkel_level                        
             if level == None:
                 freq_list = freq_list_full
@@ -247,9 +253,7 @@ class LED_admin():
                     ii = int(i/4 + 1)
                     rand_value = (bling[random.randrange(3)]//ii, bling[random.randrange(3)]//ii,bling[random.randrange(3)]//ii)
                     rand_index_mult = random.randrange(self.NUM_LEDS)
-                    #arr_copy[rand_index_mult] = rgb_formatter(rand_value)
                     arr_copy[rand_index] = self.rgb_formatter(rand_value) # Btw 0 and NUM_LEDS (incl)
-                    #arr_copy[0] = pixels.rgb_formatter(rand_value)
                     self.output_to_chain(arr_copy)
                     utime.sleep_ms(rand_time) # Btw 4 and 16 (incl)
                 self.output_to_chain(self.arr)
@@ -260,7 +264,6 @@ class LED_admin():
 
 
 pixels = LED_admin()
-
 pixels.sparkel()
 pixels.set_zone(zone_nr=0, rgb_str='00f07f')
 utime.sleep_ms(5)
@@ -293,12 +296,9 @@ def draw_routine(pin):
     if drawer_opened != draw_sw.value():
         drawer_opened = draw_sw.value()
         led_err.duty_u16(int(65535 * draw_sw.value()))
-        #led_ok.duty_u16(int(65535 * (1 - draw_sw.value())))
         if draw_sw.value():
-            #sm.put(pixels.arr_opened, 8)
             pixels.drawer_opened()
         else: 
-            #sm.put(pixels.arr, 8)
             pixels.drawer_closed()
    
 draw_sw.irq(trigger=machine.Pin.IRQ_FALLING | machine.Pin.IRQ_RISING, handler=draw_routine)
@@ -338,7 +338,6 @@ is_connected = False
 is_MAC = False
 is_data = False
 data_change = False
-#connect_syntax = b"OK+Get:0OK+CONN:"
 connect_syntax = b"OK+CONN:"
 disconnect_syntax = b"OK+LOST:"
 inbound = False
@@ -347,32 +346,19 @@ wholeframe = bytes()
 led_err.duty_u16(int(0))
 led_ok.duty_u16(int(65535))
 
-    
-def decode_bt_data(data):
-    colour_factor_list = (16, 8, 0)
-    data = str(data)[2:-1]
-    data = data[:(NUM_LEDS*6)]
-    arr = array.array("I", [0 for _ in range(NUM_LEDS)])
-    print(f'cropped data: {data}')
-    for i, b in enumerate(data):
-        led_index = i // 6
-        nibb_index = 1 - (i % 2)
-        colour_index = (i//2) % 3
-        value = int(b, 16) << (nibb_index * 4)
-        colour_factor = colour_factor_list[colour_index]
-        value_colour = value << colour_factor
-        arr[led_index] += value_colour
-    print(f'arr: {arr}')
-    return arr
-
 ABSOLUTE_INDEX_ID = 'AIX000' # RGB, Start, Offset
 ZONE_INDEX_ID = 'ZIX000' # RGB, Zone_list_lengt, Zones
 GRADIENT_ID = 'GRA000' # RGB, Start, Offset
 TIME_SYNC_ID = 'TSY000' # 
 BRIGHTNESS_ID = 'BRI000' # RGB
 DAYLIGHT_ID = 'DAL000' # RGB
+CUSTOM_ID = 'CDP000' # RGB, PWM
 
 def bt_data_processing(payload):
+    if payload == '':
+        print(f'bt_data_processing:: Attempt transferring data failed. Communication initiated but payload is void.')
+        return 
+        
     d = str(payload)[2:-1].split(':')
     print(f'processing payload: {payload}, d: {d}')
     command = d[0]
@@ -404,10 +390,16 @@ def bt_data_processing(payload):
         rgb = d[1]
         pixels.set_daylight(rgb)
         print(f'DAYLIGHT_ID:: {rgb}')
+    if CUSTOM_ID in command:
+        mes = d[1]
+        pwm = d[2]
+        clock.custom_write(mes, pwm)
+        print(f'CUSTOM_ID:: mes: {mes}, pwm: {pwm}')
+    #else:
+        #print(f'bt_data_processing::  Communication error. Communication succeded but payload is not recognised.')
+    return 
 
-    
-    
-    
+
 while True:
     while uart.any() > 0:
         if len(payload_list) and data_change:
@@ -416,12 +408,10 @@ while True:
 
         in_data = uart.read(1)
         rx_data += in_data
-        #wholeframe += in_data
 
         if connect_syntax in rx_data and not is_connected:
             led_err.duty_u16(int(65535))
             led_ok.duty_u16(int(10000))
-            #rx_data = rx_data[-len(connect_syntax):]
             rx_data = bytes()
             is_connected = True
             is_MAC = True
