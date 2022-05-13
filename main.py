@@ -5,12 +5,15 @@ from rp2 import PIO, StateMachine, asm_pio
 from time import sleep
 import re
 import random
+import CD4094_class
 #from machine import Pin, Timer, I2C
 
 led_onboard = machine.Pin(25, machine.Pin.OUT)
 led_onboard.value(1)
 
 uart = machine.UART(0, 9600, tx=Pin(12), rx=Pin(13), bits=8, parity=None, stop=1)
+cd = CD4094_class.CD4094()
+
 
 led_ok = machine.PWM(machine.Pin(5))
 led_err = machine.PWM(machine.Pin(6))
@@ -48,7 +51,58 @@ sm = rp2.StateMachine(0, ws2812, freq=8_000_000, sideset_base=Pin(0))
 sm.active(1)
 
 
+class Clock():
+    def __init__(self):
+        self.ticks = 0
+        self.tick_quarter = 0
+        self.sync_buffer = 0
+        self.sec_counter = 0
+        
+    def time_formatter(self, ticks):
+        assert ticks <= (24 * 60)
+        h = '00' + str((ticks) // 60)
+        m = '00' + str((ticks) % 60)
+        t = h[-2:] + m[-2:]
+        #print(f'tick: {ticks}, h: {h}, m: {m}, t: {t}')
+        return t
     
+    
+    def ticker(self):
+        def ticker_func(timer):            
+            if self.tick_quarter == 0:
+                self.ticks = (self.ticks + 1) % (24 * 60)
+                time_formatted = self.time_formatter(self.ticks)                    
+                #print(time_formatted)
+                cd.transmit(time_formatted, red=0, pwm_duty = (0xffff//2))
+            #print(self.ticks)
+            self.tick_quarter = (self.tick_quarter + 1) % 60
+        self.sparkel_timer = Timer()
+        self.sparkel_timer.init(freq=1, mode=Timer.PERIODIC, callback=ticker_func)  
+    
+    @staticmethod
+    def time_to_ticks(data):
+        c_sync = (data[:4][0:2], data[:4][2:4])
+        f_sync = int(data[-2:])
+        ticks_new = (int(c_sync[0]) * 60) + int((c_sync[1]))
+        print(f'time_to_ticks:: data: {data}, {type(data)}, c_sync: {c_sync}, f_sync: {f_sync}, ticks_new: {ticks_new}')
+        return (ticks_new, f_sync)
+    
+    def clock_sync(self, data):
+        print(f'clock_sync:: data: {data}')
+        assert len(data) == 6 and isinstance(data, str)
+        ticks, tick_quarter = self.time_to_ticks(data)
+        print(f'clock_sync:: data:{data}, {type(data)}, ticks: {ticks}, tick_quarter: {tick_quarter}')
+        self.sync_buffer = data
+        self.ticks = ticks
+        self.tick_quarter = tick_quarter
+        time_formatted = self.time_formatter(self.ticks)
+        cd.transmit(time_formatted, red=0, pwm_duty = (0xffff//1))
+        
+        
+    
+clock = Clock()
+clock.ticker()
+
 class LED_admin():
     def __init__(self, NUM_LEDS=57):
         self.NUM_LEDS = NUM_LEDS
@@ -152,7 +206,7 @@ class LED_admin():
             raise ValueError        
         return rgb
 
-    def set_absolute(self, start=0, end=NUM_LEDS+1, rgb_str='2f1f0f'):
+    def set_absolute(self, start, end, rgb_str):
         rgb = self.insist_int(rgb_str)
         for i in range(start, end):
             self.rgb_list[i] = rgb
@@ -160,7 +214,7 @@ class LED_admin():
         self.rgb_scaling()
         self.output_to_chain(self.arr)
 
-    def set_zone(self, zone_nr=0, rgb_str='2f1f0f'):
+    def set_zone(self, zone_nr, rgb_str):
         rgb = self.insist_int(rgb_str)
         for z in self.z_list[zone_nr]:
             self.rgb_list[z] = rgb
@@ -209,9 +263,25 @@ pixels = LED_admin()
 
 pixels.sparkel()
 pixels.set_zone(zone_nr=0, rgb_str='00f07f')
+utime.sleep_ms(5)
 pixels.set_zone(zone_nr=1, rgb_str='7f0f7f')
+utime.sleep_ms(0)
 pixels.set_zone(zone_nr=2, rgb_str='f00f7f')
+utime.sleep_ms(5)
 pixels.set_zone(zone_nr=3, rgb_str='077f2f')
+utime.sleep_ms(5)
+
+pixels.set_absolute(start=30, end=45, rgb_str='f77f2f')
+pixels.set_daylight('ffffff')
+utime.sleep_ms(5)
+
+pixels.set_brightness('ffffff')
+utime.sleep_ms(5)
+pixels.set_absolute(start=35, end=40, rgb_str='f70f21')
+
+utime.sleep_ms(10)
+pixels.set_brightness('bfbfaf')
+utime.sleep_ms(10)
 pixels.set_brightness('0f0f0f')
 
 drawer_opened = 0
@@ -256,9 +326,7 @@ MSG_SET_NOTI_1 = "AT+NOTI1"
 MSG_GET_NOTP = "AT+NOTP?"
 MSG_SET_NOTP_0 = "AT+NOTP0"
 MSG_SET_NOTP_1 = "AT+NOTP1"
-
-
-    
+  
     
 message = MSG_GET_MODE
 uart.write(message.encode('ascii'))
@@ -310,29 +378,31 @@ def bt_data_processing(payload):
     command = d[0]
 
     if ABSOLUTE_INDEX_ID in command:
-        start = int(d[1], base=16)
-        end = int(d[2], base=16)
+        start = int(d[1], 16)
+        end = int(d[2], 16)
         rgb = d[3]
         print(f'ABSOLUTE_INDEX_ID:: {d}, {start}, {end}, {rgb}')
         pixels.set_absolute(start, end, rgb)
     if ZONE_INDEX_ID in command:
-        zone_id = int(d[1], base=16)
+        zone_id = int(d[1], 16)
         rgb = d[2]
         print(f'ZONE_INDEX_ID:: {d}, {zone_id}, {rgb}')
         pixels.set_zone(zone_id, rgb)
     if GRADIENT_ID in command:
-        start = int(d[1][:4], base=16)
-        end = int(d[1][4:], base=16)
+        start = int(d[1][:4], 16)
+        end = int(d[1][4:], 16)
         rgb = d[2]
         print(f'GRADIENT_ID:: {d}, {start}, {end}, {rgb}')
     if TIME_SYNC_ID in command:
-        time_stamp = rgb = d[1]
+        time_stamp = d[1]
+        clock.clock_sync(time_stamp)
     if BRIGHTNESS_ID in command:
         rgb = d[1]
         pixels.set_brightness(rgb)
         print(f'BRIGHTNESS_ID:: {rgb}')
     if DAYLIGHT_ID in command:
         rgb = d[1]
+        pixels.set_daylight(rgb)
         print(f'DAYLIGHT_ID:: {rgb}')
 
     
