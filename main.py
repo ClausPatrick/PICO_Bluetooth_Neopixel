@@ -6,8 +6,12 @@ from time import sleep
 import re
 import random
 import CD4094_class
+import json
+import hashlib
+import MAC_hash_list
 #from machine import Pin, Timer, I2C
 
+   
 led_onboard = machine.Pin(25, machine.Pin.OUT)
 led_onboard.value(1)
 
@@ -52,15 +56,18 @@ sm.active(1)
 
 
 class Clock():
+    '''Keeping track of time, synchronising to central, formatting time such it can be displayed.'''    
     def __init__(self):
         self.ticks = 0
         self.tick_quarter = 0
         self.sync_buffer = 0
         self.sec_counter = 0
-        self.display_pwm = 0xffff
+        self.display_pwm = 0x00ff
         self.enable_display_daylight_adjustment = True
+        self.is_synced = False
         
     def time_formatter(self, ticks):
+        '''Var ticks (0 to 24*60) to timeformat HhMm. '''        
         assert ticks <= (24 * 60)
         h = '00' + str((ticks) // 60)
         m = '00' + str((ticks) % 60)
@@ -69,14 +76,15 @@ class Clock():
     
     
     def ticker(self):
+        '''Var ticks counts from 0 to 24*60 for each minute. Var tick_quarter is actually seconds. '''        
         def ticker_func(timer):            
             if self.tick_quarter == 0:
                 self.ticks = (self.ticks + 1) % (24 * 60)
                 time_formatted = self.time_formatter(self.ticks)                    
                 cd.transmit(time_formatted, red=0, pwm_duty = (self.display_pwm//1))
             self.tick_quarter = (self.tick_quarter + 1) % 60
-        self.sparkel_timer = Timer()
-        self.sparkel_timer.init(freq=1, mode=Timer.PERIODIC, callback=ticker_func)  
+        self.ticker_timer = Timer()
+        self.ticker_timer.init(freq=1, mode=Timer.PERIODIC, callback=ticker_func)  
     
     @staticmethod
     def time_to_ticks(data):
@@ -133,6 +141,7 @@ class LED_admin():
         self.z_list = [self.z_00, self.z_01, self.z_02, self.z_ff]
         self.z_all = self.z_00 + self.z_01 + self.z_02 + self.z_ff
         self.sparkel_level = None
+        
 
     def rgb_formatter(self, data):
         '''Array of 3 RGB data converted to fit Neopixel format (GgRrBb where character-pair is 1 byte size). Error return -1
@@ -144,7 +153,7 @@ class LED_admin():
             return -1      
 
     def rgb_reformatter(self, data):
-        '''Opposite of rgb_formatter. '''
+        '''Opposite of rgb_formatter. Takes either int value or hex formatted string and parses it into (r, g, b) tuple with ints.'''
         if isinstance(data, int):
             s = ('000000' + str(hex(data)[2:]))[-6:] # Ensuring string lenght = 6.      
         elif isinstance(data, str):
@@ -158,6 +167,7 @@ class LED_admin():
         sm.put(data, 8)
     
     def rgb_scaling(self):
+        '''Performing a weighted sum of rgb_list, brightness and daylight. Result written into array arr.'''
         for i in range(NUM_LEDS):
             s = ('000000' + str(hex(self.rgb_list[i]))[2:])[-6:]
             #print(f's: {s}, {type(s)}')
@@ -205,16 +215,28 @@ class LED_admin():
             b = self.rgb_reformatter(self.rgb_list[ix])
             print(f'    arr: {a}, rgb: {b}')
 
-    def insist_int(self, rgb_str):
-        if isinstance(rgb_str, int):
-            rgb = rgb_str         
-        elif isinstance(rgb_str, str):
-            rgb = int(rgb_str, 16)
+    def insist_int(self, rgb_in):
+        '''Sanity check'''
+        if isinstance(rgb_in, int):
+            rgb_in = ('000000' + str(hex(data)[2:]))[-6:]
+            #print(f'insist_int:: int: rgb_in: {rgb_in}')
+        elif isinstance(rgb_in, str):
+            #print(f'insist_int:: str: rgb_in: {rgb_in}')
+            rgb_in = rgb_in[2:4] + rgb_in[0:2] + rgb_in[4:6]                        
+        elif isinstance(rgb_in, (list, tuple)):
+            rgb_in = self.rgb_formatter(rgb_in)
+            rgb_in = ('000000' + str(hex(rgb_in)[2:]))[-6:]
+            #print(f'insist_int:: list: rgb_in: {rgb_in}')
+            
         else:
-            raise ValueError        
+            raise ValueError
+        rgb_reform = rgb_in[0:2] + rgb_in[2:4] + rgb_in[4:6]
+        rgb = int(rgb_reform, 16)
+        #print(f'insist_int:: else: rgb_in: {rgb_in}, rgb_reform: {rgb_reform}, rgb: {rgb}, {hex(rgb)}')
         return rgb
 
     def set_absolute(self, start, end, rgb_str):
+        '''Write RGB value on range of LEDs from start to end.'''
         rgb = self.insist_int(rgb_str)
         for i in range(start, end):
             if i <= NUM_LEDS:
@@ -223,6 +245,7 @@ class LED_admin():
         self.output_to_chain(self.arr)
 
     def set_zone(self, zone_nr, rgb_str):
+        '''Write RGB value on range of LEDs assigned to specific zone.'''
         rgb = self.insist_int(rgb_str)
         for z in self.z_list[zone_nr]:
             self.rgb_list[z] = rgb
@@ -265,27 +288,14 @@ class LED_admin():
 
 pixels = LED_admin()
 pixels.sparkel()
-pixels.set_zone(zone_nr=0, rgb_str='00f07f')
+pixels.set_zone(zone_nr=0, rgb_str=(255, 0, 255))
 utime.sleep_ms(5)
-pixels.set_zone(zone_nr=1, rgb_str='7f0f7f')
-utime.sleep_ms(0)
-pixels.set_zone(zone_nr=2, rgb_str='f00f7f')
+pixels.set_zone(zone_nr=1, rgb_str='0000ff')
 utime.sleep_ms(5)
-pixels.set_zone(zone_nr=3, rgb_str='077f2f')
+pixels.set_zone(zone_nr=2, rgb_str='00ff00')
 utime.sleep_ms(5)
-
-pixels.set_absolute(start=30, end=45, rgb_str='f77f2f')
-pixels.set_daylight('ffffff')
+pixels.set_zone(zone_nr=3, rgb_str=(255, 0, 0))
 utime.sleep_ms(5)
-
-pixels.set_brightness('ffffff')
-utime.sleep_ms(5)
-pixels.set_absolute(start=35, end=40, rgb_str='f70f21')
-
-utime.sleep_ms(10)
-pixels.set_brightness('bfbfaf')
-utime.sleep_ms(10)
-pixels.set_brightness('0f0f0f')
 
 drawer_opened = 0
 
@@ -400,11 +410,19 @@ def bt_data_processing(payload):
     return 
 
 
+
+allowed_central_list = MAC_hash_list.hashlist
+
 while True:
     while uart.any() > 0:
         if len(payload_list) and data_change:
             data_change = False
-            bt_data_processing(payload_list[-1])
+            #bt_data_processing(payload_list[-1])
+            if hashlib.sha256(central_address).digest() in allowed_central_list:
+                print(f'Central address verified, {central_address}')
+                bt_data_processing(payload_list[-1])
+            else:
+                print(f'Central address NOT verified. Dropping data.  {hashlib.sha256(central_address).digest()}, {central_address}, {payload_list}')
 
         in_data = uart.read(1)
         rx_data += in_data
