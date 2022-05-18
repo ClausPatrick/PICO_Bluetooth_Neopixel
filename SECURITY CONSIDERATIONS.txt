@@ -1,0 +1,17 @@
+SECURITY CONSIDERATIONS
+
+-Risk assesment:
+BT packets might be intercepted and rogue centrals could reissue captured packets causing to block communications from friendly centrals as well as avail of functinalities of changing LEDs and 7seg displays. 
+Periphery does not tie into any other systems so this scope is limited by its functinality however future extensions might invalidate this assumption therefore several security implementations are presented.
+
+-Constrains:
+BT BLE Module used (HM18) and the solution around the central utilise a one way comm line (central to peripery) which limits means for asymmetric encryption and authentications. 
+No feedback from periphery on central's side is expected.
+
+-Meassures:
+--MAC address white listing. MAC addresses are stored in a seperate file, stored as HASH and compared against received MAC addresses. 
+--Encryption: Costum algorithm based on EXOR with a shared rolling key. 
+This still leaves the possibilty of rogue centrals to capture a packet and resend it with a spoofed MAC address.
+--Buffer increment check: Each command issued is counted on both side. The counter on each new transmission must have a higher buffer count than stored. 
+A received packet with a same buffer count that was received before indicates a rogue transmission attempt and must be dropped. 
+Buffer overflow clear procedures might be implemented but requires careful consideration as buffers might be out of sync due to packet losses.
