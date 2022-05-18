@@ -9,6 +9,7 @@ import CD4094_class
 import json
 import hashlib
 import MAC_hash_list
+import private_key
 #from machine import Pin, Timer, I2C
 
    
@@ -28,10 +29,6 @@ led_ok.duty_u16(65535)
 led_err.duty_u16(0)
 
 NUM_LEDS = 57
-#arr = array.array("I", [0 for _ in range(NUM_LEDS)])
-#curve = [int((256 ** (1 - (i/NUM_LEDS)))- 1) for i in range(NUM_LEDS)]
-
-#sideset_init=(PIO.OUT_LOW,) * 2, out_init=rp2.PIO.OUT_HIGH
 
 @asm_pio(sideset_init=PIO.OUT_LOW, out_shiftdir=PIO.SHIFT_LEFT, autopull=True, pull_thresh=24)
 def ws2812():
@@ -143,7 +140,8 @@ class LED_admin():
         self.sparkel_level = None
         
 
-    def rgb_formatter(self, data):
+    @staticmethod
+    def rgb_formatter(data):
         '''Array of 3 RGB data converted to fit Neopixel format (GgRrBb where character-pair is 1 byte size). Error return -1
         if shit goes sideways.
         '''
@@ -152,7 +150,8 @@ class LED_admin():
         else:
             return -1      
 
-    def rgb_reformatter(self, data):
+    @staticmethod
+    def rgb_reformatter(data):
         '''Opposite of rgb_formatter. Takes either int value or hex formatted string and parses it into (r, g, b) tuple with ints.'''
         if isinstance(data, int):
             s = ('000000' + str(hex(data)[2:]))[-6:] # Ensuring string lenght = 6.      
@@ -239,10 +238,23 @@ class LED_admin():
         '''Write RGB value on range of LEDs from start to end.'''
         rgb = self.insist_int(rgb_str)
         for i in range(start, end):
+            #print(f'set_absolute:: rgb: {rgb}, i: {i}, NUM_LEDS: {NUM_LEDS}')
             if i <= NUM_LEDS:
                 self.rgb_list[i] = rgb
         self.rgb_scaling()
         self.output_to_chain(self.arr)
+        print(f'set_absolute:: rgb: {rgb}, {hex(rgb)}')
+        
+    def set_gradient(self, start, end, rgb_str):
+        '''Write RGB value on range of LEDs from start to end.'''
+        rgb = self.insist_int(rgb_str)
+        for i in range(start, end):
+            #print(f'set_absolute:: rgb: {rgb}, i: {i}, NUM_LEDS: {NUM_LEDS}')
+            if i <= NUM_LEDS:
+                self.rgb_list[i] = rgb
+        self.rgb_scaling()
+        self.output_to_chain(self.arr)
+        print(f'set_gradient:: rgb: {rgb}, {hex(rgb)}')
 
     def set_zone(self, zone_nr, rgb_str):
         '''Write RGB value on range of LEDs assigned to specific zone.'''
@@ -363,19 +375,38 @@ TIME_SYNC_ID = 'TSY000' #
 BRIGHTNESS_ID = 'BRI000' # RGB
 DAYLIGHT_ID = 'DAL000' # RGB
 CUSTOM_ID = 'CDP000' # RGB, PWM
+TEST_ID = 'TST000'
+ENCRYPT_ID = 'ENC000'
+
+
+def decrypt(cmd):
+    assert isinstance(cmd, str), "Input not string"
+    lenght = len(cmd)
+    key_lenght = len(key)
+    cmd_bytes = str.encode(cmd)
+    new = ''
+    for i, b in enumerate(cmd_bytes):
+        key_index = i % key_lenght
+        key_mask = ord(key[key_index]) & 0b00011111
+        new += ''.join(chr(b ^ key_mask))
+    print(f'decrypt:: clean: {cmd},  new: {new}\n')    
+    return new 
+    
+key = private_key.key
 
 def bt_data_processing(payload):
     if payload == '':
         print(f'bt_data_processing:: Attempt transferring data failed. Communication initiated but payload is void.')
         return 
-        
-    d = str(payload)[2:-1].split(':')
-    print(f'processing payload: {payload}, d: {d}')
+    print(payload)
+    decrypted = decrypt(str(payload)[2:-1])
+    d = decrypted.split(':')
+    print(f'processing payload: {decrypted}, d: {d}')
     command = d[0]
 
     if ABSOLUTE_INDEX_ID in command:
-        start = int(d[1], 16)
-        end = int(d[2], 16)
+        start = int(d[1])
+        end = int(d[2])
         rgb = d[3]
         print(f'ABSOLUTE_INDEX_ID:: {d}, {start}, {end}, {rgb}')
         pixels.set_absolute(start, end, rgb)
@@ -385,8 +416,8 @@ def bt_data_processing(payload):
         print(f'ZONE_INDEX_ID:: {d}, {zone_id}, {rgb}')
         pixels.set_zone(zone_id, rgb)
     if GRADIENT_ID in command:
-        start = int(d[1][:4], 16)
-        end = int(d[1][4:], 16)
+        start = int(d[1][:4])
+        end = int(d[1][4:])
         rgb = d[2]
         print(f'GRADIENT_ID:: {d}, {start}, {end}, {rgb}')
     if TIME_SYNC_ID in command:
@@ -405,11 +436,9 @@ def bt_data_processing(payload):
         pwm = d[2]
         clock.custom_write(mes, pwm)
         print(f'CUSTOM_ID:: mes: {mes}, pwm: {pwm}')
-    #else:
-        #print(f'bt_data_processing::  Communication error. Communication succeded but payload is not recognised.')
+    if TEST_ID in command:
+        print(f'TEST_ID::  d: {d}')        
     return 
-
-
 
 allowed_central_list = MAC_hash_list.hashlist
 
