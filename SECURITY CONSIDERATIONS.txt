@@ -6,7 +6,8 @@ Periphery does not tie into any other systems so this scope is limited by its fu
 
 -Constrains:
 BT BLE Module used (HM18) and the solution around the central utilise a one way comm line (central to peripery) which limits means for asymmetric encryption and authentications. 
-No feedback from periphery on central's side is expected.
+No feedback from periphery on central's side is expected. 
+In addition the periphery only allows a limited size of packets to be received before terminating the connection. The central will raise as an error in that case.
 
 -Meassures:
 --MAC address white listing. MAC addresses are stored in a seperate file, stored as HASH and compared against received MAC addresses. 
