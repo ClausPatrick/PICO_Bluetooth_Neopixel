@@ -266,7 +266,7 @@ class LED_admin():
 
     def sparkel(self, f='h', l='h', s='h'):
         new_freq = 2
-        freq_list_full = (2.4, 2.2, 2, 1.64, 1.25, 1.117, 1, 0.8, 0.5, 0.33, 0.1)
+        freq_list_full = (2, 1.64, 1.25, 1.117, 1, 0.8, 0.5, 0.33, 0.1)
         freq_list = freq_list_full[:]
         def sparkel_func(timer):
             level = self.sparkel_level                        
@@ -368,6 +368,7 @@ wholeframe = bytes()
 led_err.duty_u16(int(0))
 led_ok.duty_u16(int(65535))
 
+
 ABSOLUTE_INDEX_ID = 'AIX000' # RGB, Start, Offset
 ZONE_INDEX_ID = 'ZIX000' # RGB, Zone_list_lengt, Zones
 GRADIENT_ID = 'GRA000' # RGB, Start, Offset
@@ -380,10 +381,10 @@ ENCRYPT_ID = 'ENC000'
 
 
 def decrypt(cmd):
-    assert isinstance(cmd, str), "Input not string"
+    assert isinstance(cmd, bytes), "Input not Bytes"
     lenght = len(cmd)
     key_lenght = len(key)
-    cmd_bytes = str.encode(cmd)
+    cmd_bytes = cmd
     new = ''
     for i, b in enumerate(cmd_bytes):
         key_index = i % key_lenght
@@ -399,7 +400,8 @@ def bt_data_processing(payload):
         print(f'bt_data_processing:: Attempt transferring data failed. Communication initiated but payload is void.')
         return 
     print(payload)
-    decrypted = decrypt(str(payload)[2:-1])
+
+    decrypted = decrypt(payload)
     d = decrypted.split(':')
     print(f'processing payload: {decrypted}, d: {d}')
     command = d[0]
