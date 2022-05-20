@@ -10,9 +10,20 @@ import json
 import hashlib
 import MAC_hash_list
 import private_key
-#from machine import Pin, Timer, I2C
 
-   
+
+# Loading external values.
+key = private_key.key
+allowed_central_list = MAC_hash_list.hashlist
+NUM_LEDS = 57
+
+
+with open('command_counter.json', 'r') as f:
+    command_counter = json.loads(f.read())
+    print(f'command_counter: {command_counter} \n')
+
+
+# Setting up HW peripheries.   
 led_onboard = machine.Pin(25, machine.Pin.OUT)
 led_onboard.value(1)
 
@@ -28,8 +39,9 @@ led_err.freq(1000)
 led_ok.duty_u16(65535)
 led_err.duty_u16(0)
 
-NUM_LEDS = 57
 
+
+# PIO program to interface with ws2812
 @asm_pio(sideset_init=PIO.OUT_LOW, out_shiftdir=PIO.SHIFT_LEFT, autopull=True, pull_thresh=24)
 def ws2812():
     # fmt: off
@@ -298,6 +310,7 @@ class LED_admin():
         self.sparkel_timer.init(freq=2, mode=Timer.PERIODIC, callback=sparkel_func)     
 
 
+# Init routine:
 pixels = LED_admin()
 pixels.sparkel()
 pixels.set_zone(zone_nr=0, rgb_str=(255, 0, 255))
@@ -352,10 +365,11 @@ MSG_SET_NOTP_1 = "AT+NOTP1"
     
 message = MSG_GET_MODE
 uart.write(message.encode('ascii'))
-
 print(f'sent MESSAGE: {message}')
 rx_data = bytes()
 
+# Inbound Bluetooth packets.
+# Setting up variables handling data from packets.
 is_connected = False
 is_MAC = False
 is_data = False
@@ -368,16 +382,15 @@ wholeframe = bytes()
 led_err.duty_u16(int(0))
 led_ok.duty_u16(int(65535))
 
-
-ABSOLUTE_INDEX_ID = 'AIX000' # RGB, Start, Offset
-ZONE_INDEX_ID = 'ZIX000' # RGB, Zone_list_lengt, Zones
-GRADIENT_ID = 'GRA000' # RGB, Start, Offset
-TIME_SYNC_ID = 'TSY000' # 
-BRIGHTNESS_ID = 'BRI000' # RGB
-DAYLIGHT_ID = 'DAL000' # RGB
-CUSTOM_ID = 'CDP000' # RGB, PWM
-TEST_ID = 'TST000'
-ENCRYPT_ID = 'ENC000'
+ABSOLUTE_INDEX_ID = 'AIX' # RGB, Start, Offset
+ZONE_INDEX_ID = 'ZIX' # RGB, Zone_list_lengt, Zones
+GRADIENT_ID = 'GRA' # RGB, Start, Offset
+TIME_SYNC_ID = 'TSY' # 
+BRIGHTNESS_ID = 'BRI' # RGB
+DAYLIGHT_ID = 'DAL' # RGB
+CUSTOM_ID = 'CDP' # RGB, PWM
+TEST_ID = 'TST'
+ENCRYPT_ID = 'ENC'
 
 
 def decrypt(cmd):
@@ -393,7 +406,22 @@ def decrypt(cmd):
     print(f'decrypt:: clean: {cmd},  new: {new}\n')    
     return new 
     
-key = private_key.key
+
+def counter_integrity_check(cmd):
+    ''' Security measure. Receiver expects to receive a counter value for each command that is higher than the own one.
+    This prevents a previously captured stream to be accepted when resent. It matters not how much higher so in case
+    a previously failed communication attempt does not lock up the receiver. '''
+    current_counter = command_counter[cmd[:3]]
+    counter_rx = int(cmd[3:])
+    print(f'counter_integrity_check:: current_counter: {current_counter}, counter_rx: {counter_rx}')
+    allgood = current_counter < counter_rx
+    if allgood:
+        command_counter[cmd[:3]] = counter_rx
+        with open('command_counter.json', 'w') as f:
+            json.dump(command_counter, f)
+            print(f'Updating command_counter.json: {command_counter} \n')
+    return allgood
+
 
 def bt_data_processing(payload):
     if payload == '':
@@ -404,45 +432,48 @@ def bt_data_processing(payload):
     decrypted = decrypt(payload)
     d = decrypted.split(':')
     print(f'processing payload: {decrypted}, d: {d}')
-    command = d[0]
+    if counter_integrity_check(d[0]):
+        print('Integrety check passed')
+        command = d[0]
 
-    if ABSOLUTE_INDEX_ID in command:
-        start = int(d[1])
-        end = int(d[2])
-        rgb = d[3]
-        print(f'ABSOLUTE_INDEX_ID:: {d}, {start}, {end}, {rgb}')
-        pixels.set_absolute(start, end, rgb)
-    if ZONE_INDEX_ID in command:
-        zone_id = int(d[1], 16)
-        rgb = d[2]
-        print(f'ZONE_INDEX_ID:: {d}, {zone_id}, {rgb}')
-        pixels.set_zone(zone_id, rgb)
-    if GRADIENT_ID in command:
-        start = int(d[1][:4])
-        end = int(d[1][4:])
-        rgb = d[2]
-        print(f'GRADIENT_ID:: {d}, {start}, {end}, {rgb}')
-    if TIME_SYNC_ID in command:
-        time_stamp = d[1]
-        clock.clock_sync(time_stamp)
-    if BRIGHTNESS_ID in command:
-        rgb = d[1]
-        pixels.set_brightness(rgb)
-        print(f'BRIGHTNESS_ID:: {rgb}')
-    if DAYLIGHT_ID in command:
-        rgb = d[1]
-        pixels.set_daylight(rgb)
-        print(f'DAYLIGHT_ID:: {rgb}')
-    if CUSTOM_ID in command:
-        mes = d[1]
-        pwm = d[2]
-        clock.custom_write(mes, pwm)
-        print(f'CUSTOM_ID:: mes: {mes}, pwm: {pwm}')
-    if TEST_ID in command:
-        print(f'TEST_ID::  d: {d}')        
+        if ABSOLUTE_INDEX_ID in command:
+            start = int(d[1])
+            end = int(d[2])
+            rgb = d[3]
+            print(f'ABSOLUTE_INDEX_ID:: {d}, {start}, {end}, {rgb}')
+            pixels.set_absolute(start, end, rgb)
+        if ZONE_INDEX_ID in command:
+            zone_id = int(d[1], 16)
+            rgb = d[2]
+            print(f'ZONE_INDEX_ID:: {d}, {zone_id}, {rgb}')
+            pixels.set_zone(zone_id, rgb)
+        if GRADIENT_ID in command:
+            start = int(d[1][:4])
+            end = int(d[1][4:])
+            rgb = d[2]
+            print(f'GRADIENT_ID:: {d}, {start}, {end}, {rgb}')
+        if TIME_SYNC_ID in command:
+            time_stamp = d[1]
+            clock.clock_sync(time_stamp)
+        if BRIGHTNESS_ID in command:
+            rgb = d[1]
+            pixels.set_brightness(rgb)
+            print(f'BRIGHTNESS_ID:: {rgb}')
+        if DAYLIGHT_ID in command:
+            rgb = d[1]
+            pixels.set_daylight(rgb)
+            print(f'DAYLIGHT_ID:: {rgb}')
+        if CUSTOM_ID in command:
+            mes = d[1]
+            pwm = d[2]
+            clock.custom_write(mes, pwm)
+            print(f'CUSTOM_ID:: mes: {mes}, pwm: {pwm}')
+        if TEST_ID in command:
+            print(f'TEST_ID::  d: {d}')
+    else:
+        print('Integrety check failed')
     return 
 
-allowed_central_list = MAC_hash_list.hashlist
 
 while True:
     while uart.any() > 0:
