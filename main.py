@@ -143,8 +143,7 @@ class Clock():
         
         
     
-clock = Clock()
-clock.ticker()
+
 
 class LED_admin():
     def __init__(self, NUM_LEDS=57):
@@ -369,7 +368,8 @@ class Alarm():
 
         
         
-
+clock = Clock()
+clock.ticker()
 alarm = Alarm()
 
 
@@ -401,36 +401,6 @@ def draw_routine(pin):
    
 draw_sw.irq(trigger=machine.Pin.IRQ_FALLING | machine.Pin.IRQ_RISING, handler=draw_routine)
 
-BT_NAME = "Illuminati"
-MSG_OK = "AT"
-MSG_GET_ADDRESS = "AT+ADDR?"
-MSG_DISCOVER = "AT+DISC?" # requires AT+IMME1 and AT+ROLE1 
-MSG_GET_NAME = "AT+NAME?"
-MSG_SET_NAME = "AT+NAME" + BT_NAME
-MSG_RESTART = "AT+RESET"
-MSG_GET_ROLE = "AT+ROLE?"
-MSG_GET_UUID = "AT+UUID?"
-MSG_SET_ROLE_0 = "AT+ROLE0"
-MSG_SET_ROLE_1 = "AT+ROLE1"
-MSG_GET_MODE = "AT+MODE?"
-MSG_SET_MODE_0 = "AT+MODE0" # Transmission mode
-MSG_SET_MODE_1 = "AT+MODE1" # Remote control mode
-MSG_SET_MODE_2 = "AT+MODE2" # Limited remote-control mode
-MSG_GET_HELP = "AT+HELP?"
-MSG_GET_WORKTYPE = "AT+IMME?"
-MSG_GET_NOTI = "AT+NOTI?"
-MSG_SET_NOTI_0 = "AT+NOTI0"
-MSG_SET_NOTI_1 = "AT+NOTI1"
-MSG_GET_NOTP = "AT+NOTP?"
-MSG_SET_NOTP_0 = "AT+NOTP0"
-MSG_SET_NOTP_1 = "AT+NOTP1"
-  
-    
-message = MSG_GET_MODE
-uart.write(message.encode('ascii'))
-print(f'sent MESSAGE: {message}')
-rx_data = bytes()
-
 # Inbound Bluetooth packets.
 # Setting up variables handling data from packets.
 is_connected = False
@@ -457,72 +427,85 @@ ENCRYPT_ID = 'ENC'
 ALARM_ID = 'ALM'
 
 
-def decrypt(cmd):
-    assert isinstance(cmd, bytes), "Input not Bytes"
-    lenght = len(cmd)
-    key_lenght = len(key)
-    cmd_bytes = cmd
-    new = ''
-    for i, b in enumerate(cmd_bytes):
-        key_index = i % key_lenght
-        key_mask = ord(key[key_index]) & 0b00011111
-        new += ''.join(chr(b ^ key_mask))
-    print(f'decrypt:: clean: {cmd},  new: {new}')    
-    return new 
-    
+class BT_processor():
+    key = private_key.key
+    #key = '!1)%()+3%@6&^'
+    allowed_central_list = MAC_hash_list.hashlist
+
+    def __init__(self):
+        self.MAC_check = False
+        self.CRC_check = False
+        self.command_counter_check = False
+        self.command_counter = command_counter
+        with open('command_counter.json', 'r') as f:
+            self.command_counter = json.loads(f.read())
+            print(f'command_counter: {self.command_counter} \n')
+
+        CRC_POLY = 0xEDB88320
+        self.CRC_table = array.array('L')
+        for byte in range(256):
+            crc = 0
+            for bit in range(8):
+                if (byte ^ crc) & 1:
+                    crc = (crc >> 1) ^ CRC_POLY
+                else:
+                    crc >>= 1
+                byte >>= 1
+            self.CRC_table.append(crc)
+
+        
+    def MAC_whitelist_check(self, MAC_address):
+        self.MAC_check = False
+        if hashlib.sha256(MAC_address).digest() in self.allowed_central_list:
+            print(f'MAC_whitelist_check:: Central address verified, {MAC_address}')
+            self.MAC_check = True
+
+    def decrypt(self, cmd):
+        assert isinstance(cmd, bytes), "Input not Bytes"
+        lenght = len(cmd)
+        key_lenght = len(self.key)
+        cmd_bytes = cmd
+        new = ''
+        for i, b in enumerate(cmd_bytes):
+            key_index = i % key_lenght
+            key_mask = ord(self.key[key_index]) & 0b00011111
+            new += ''.join(chr(b ^ key_mask))
+        print(f'decrypt:: clean: {cmd},  new: {new}')    
+        return new 
+
+    def check_crc(self, cmd):
+        def crc32(string):
+            v = 0xffffffff
+            for c in string:
+                v = CRC_table[(ord(c) ^ v) & 0xff] ^ (v >> 8)
+            return -1 - v
+        crc_received = int(cmd[-8:], 16)
+        message = cmd[:-8]
+        crc_result = crc32(message) & 0xffffffff
+        self.CRC_check = crc_result == crc_received
+        print(f'check_crc:: cmd: {cmd}, rx: {crc_received}, m: {message}, res: {crc_result}, ?: {self.CRC_check}')
 
 
-def check_crc(cmd):
-    '''List of strings that were seperated by ':'. Last entry is CRC. Calculating CRC on :-1 of the list and compare
-        it with the provided CRC. Returning Boolean.'''
-    assert isinstance(cmd, (list, tuple)), "Input not list or tuple"
-    def crc32(string):
-        v = 0xffffffff
-        for c in string:
-            v = CRC_table[(ord(c) ^ v) & 0xff] ^ (v >> 8)
-        return -1 - v
-    cmd_minus_crc = ''
-    for cs in cmd[:-1]:
-        cmd_minus_crc = cmd_minus_crc + str(cs) + ":"
-    crc_result = crc32(cmd_minus_crc) & 0xffffffff
-    crc_allgood = crc_result == int(cmd[-1], 16)
-    print(f'check_crc:: cmd: {cmd}, cmd_minus_crc: {cmd_minus_crc}, crc_result: {hex(crc_result)}, cmd[-1]: {int(cmd[-1], 16)}, crc_allgood: {crc_allgood}')
-    return crc_allgood
+    def counter_integrity_check(self, cmd):
+        ''' Security measure. Receiver expects to receive a counter value for each command that is higher than the own one.
+        This prevents a previously captured stream to be accepted when resent. It matters not how much higher so in case
+        a previously failed communication attempt does not lock up the receiver. '''
+        cmd_d = cmd.split(':')
+        print(f'counter_integrity_check:: cmd: {cmd}, cmd_d: {cmd_d}')
+        try:
+            current_counter = self.command_counter[cmd_d[0][:3]]
+        except KeyError:
+            print(f'counter_integrity_check:: command not found for {cmd_d}')
+            self.command_counter_check = False
+        counter_rx = int(cmd_d[0][3:])
+        print(f'counter_integrity_check:: current_counter: {current_counter}, counter_rx: {counter_rx}')
+        self.command_counter_check = current_counter < counter_rx
+        if self.command_counter_check:
+            self.command_counter[cmd_d[0][:3]] = counter_rx # Possible issue. In Memory, this var is being changed. Upon next succesful pass on another command, it is written to file still. Not goood.
 
-def counter_integrity_check(cmd):
-    ''' Security measure. Receiver expects to receive a counter value for each command that is higher than the own one.
-    This prevents a previously captured stream to be accepted when resent. It matters not how much higher so in case
-    a previously failed communication attempt does not lock up the receiver. '''
-    try:
-        current_counter = command_counter[cmd[:3]]
-    except KeyError:
-        print(f'counter_integrity_check:: command not found for {cmd}')
-        counter_allgood = False
-        return counter_allgood
-    counter_rx = int(cmd[3:])
-    print(f'counter_integrity_check:: current_counter: {current_counter}, counter_rx: {counter_rx}')
-    counter_allgood = current_counter < counter_rx
-    if counter_allgood:
-        command_counter[cmd[:3]] = counter_rx
-    return counter_allgood
-
-
-def bt_data_processing(payload):
-    if payload == '':
-        print(f'bt_data_processing:: Attempt transferring data failed. Communication initiated but payload is void.')
-        return 0
-    print(payload)
-
-    decrypted = decrypt(payload)
-    d = decrypted.split(':')
-    print(f'processing payload: {decrypted}, d: {d}')
-    
-    is_counter_ok = counter_integrity_check(d[0])
-    is_crc_ok = check_crc(d)
-    if is_counter_ok and is_crc_ok:
-        print('Integrety check CRC passed')
+    def parse(self, cmd):
+        d = cmd.split(':')
         command = d[0]
-
         if ABSOLUTE_INDEX_ID in command:
             start = int(d[1])
             end = int(d[2])
@@ -576,40 +559,37 @@ def bt_data_processing(payload):
                 alarm.set_alarm(severity=sev, rel_time=time_length)
             print(f'ALARM_ID:: abs_or_rel: {abs_or_rel}, sev: {sev}, time_lenght: {time_length}')
             return  1
-            
-        print(f'No recognised command: {d}')
-        led_err.duty_u16(int(65535))
-        led_ok.duty_u16(int(0))
-        return 0
-    else:
-        if is_crc_ok == False:
-            print('CRC failed')
-        if is_counter_ok == False:
-            print('Integrety check failed')
-        led_err.duty_u16(int(65535))
-        led_ok.duty_u16(int(0))
-    return 0
 
+    def error_handler(self, error_type, data):
+        print(f'BT_processor::: error_handler:: error_type: {error_type}, {data}')
 
+    def process(self, MAC_address, payload):
+        self.MAC_whitelist_check(MAC_address)
+        if not self.MAC_check:
+            self.error_handler('MAC_WHITELIST', (MAC_address, payload))
+            return 0
+        payload_decrypted = self.decrypt(payload)
+        print(payload, payload_decrypted)
+        self.check_crc(payload_decrypted)
+        if not self.CRC_check:
+            self.error_handler('CRC', (MAC_address, payload_decrypted))
+            return 0
+        self.counter_integrity_check(payload_decrypted)
+        if not self.command_counter_check:
+        #if self.command_counter_check:
+            self.error_handler('COMMAND_COUNTER', (MAC_address, payload_decrypted))
+            return 0
+        self.parse(payload_decrypted)
+
+BT = BT_processor()
+
+rx_data = bytes()
 while True:
     while uart.any() > 0:
         if len(payload_list) and data_change:
             data_change = False
-            #bt_data_processing(payload_list[-1])
-            if hashlib.sha256(central_address).digest() in allowed_central_list:
-                print(f'Central address verified, {central_address}')
-                if bt_data_processing(payload_list[-1]):
-                    led_err.duty_u16(int(0))
-                    led_ok.duty_u16(int(65535))
-                    with open('command_counter.json', 'w') as f: # Moved the counter updater here to avoid updating it when CRC fails.
-                        json.dump(command_counter, f)
-                        print(f'Updating command_counter.json: {command_counter} \n')
-                else:
-                    print(f'Failure statue')
-            else:
-                print(f'Central address NOT verified. Dropping data.  {hashlib.sha256(central_address).digest()}, {central_address}, {payload_list}')
-                led_err.duty_u16(int(65535))
-                led_ok.duty_u16(int(0))
+            BT.process(central_address, payload_list[-1])
+
         in_data = uart.read(1)
         rx_data += in_data
 
