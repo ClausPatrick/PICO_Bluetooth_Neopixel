@@ -467,7 +467,7 @@ def decrypt(cmd):
         key_index = i % key_lenght
         key_mask = ord(key[key_index]) & 0b00011111
         new += ''.join(chr(b ^ key_mask))
-    print(f'decrypt:: clean: {cmd},  new: {new}, {key}\n')    
+    print(f'decrypt:: clean: {cmd},  new: {new}')    
     return new 
     
 
@@ -484,8 +484,10 @@ def check_crc(cmd):
     cmd_minus_crc = ''
     for cs in cmd[:-1]:
         cmd_minus_crc = cmd_minus_crc + str(cs) + ":"
-    allgood = str(hex(crc32(cmd_minus_crc) & 0xffffffff)[2:]) == cmd[-1]
-    return allgood
+    crc_result = crc32(cmd_minus_crc) & 0xffffffff
+    crc_allgood = crc_result == int(cmd[-1], 16)
+    print(f'check_crc:: cmd: {cmd}, cmd_minus_crc: {cmd_minus_crc}, crc_result: {hex(crc_result)}, cmd[-1]: {int(cmd[-1], 16)}, crc_allgood: {crc_allgood}')
+    return crc_allgood
 
 def counter_integrity_check(cmd):
     ''' Security measure. Receiver expects to receive a counter value for each command that is higher than the own one.
@@ -495,23 +497,20 @@ def counter_integrity_check(cmd):
         current_counter = command_counter[cmd[:3]]
     except KeyError:
         print(f'counter_integrity_check:: command not found for {cmd}')
-        allgood = False
-        return allgood
+        counter_allgood = False
+        return counter_allgood
     counter_rx = int(cmd[3:])
     print(f'counter_integrity_check:: current_counter: {current_counter}, counter_rx: {counter_rx}')
-    allgood = current_counter < counter_rx
-    if allgood:
+    counter_allgood = current_counter < counter_rx
+    if counter_allgood:
         command_counter[cmd[:3]] = counter_rx
-        with open('command_counter.json', 'w') as f:
-            json.dump(command_counter, f)
-            print(f'Updating command_counter.json: {command_counter} \n')
-    return allgood
+    return counter_allgood
 
 
 def bt_data_processing(payload):
     if payload == '':
         print(f'bt_data_processing:: Attempt transferring data failed. Communication initiated but payload is void.')
-        return 
+        return 0
     print(payload)
 
     decrypted = decrypt(payload)
@@ -530,42 +529,42 @@ def bt_data_processing(payload):
             rgb = d[3]
             print(f'ABSOLUTE_INDEX_ID:: {d}, {start}, {end}, {rgb}')
             pixels.set_absolute(start, end, rgb)
-            return
+            return 1
         if ZONE_INDEX_ID in command:
             zone_id = int(d[1], 16)
             rgb = d[2]
             print(f'ZONE_INDEX_ID:: {d}, {zone_id}, {rgb}')
             pixels.set_zone(zone_id, rgb)
-            return
+            return 1
         if GRADIENT_ID in command:
             start = int(d[1][:4])
             end = int(d[1][4:])
             rgb = d[2]
             print(f'GRADIENT_ID:: {d}, {start}, {end}, {rgb}')
-            return
+            return 1
         if TIME_SYNC_ID in command:
             time_stamp = d[1]
             clock.clock_sync(time_stamp)
-            return
+            return 1
         if BRIGHTNESS_ID in command:
             rgb = d[1]
             pixels.set_brightness(rgb)
             print(f'BRIGHTNESS_ID:: {rgb}')
-            return
+            return 1
         if DAYLIGHT_ID in command:
             rgb = d[1]
             pixels.set_daylight(rgb)
             print(f'DAYLIGHT_ID:: {rgb}')
-            return
+            return 1
         if CUSTOM_ID in command:
             mes = d[1]
             pwm = d[2]
             clock.custom_write(mes, pwm)
             print(f'CUSTOM_ID:: mes: {mes}, pwm: {pwm}')
-            return
+            return 1
         if TEST_ID in command:
             print(f'TEST_ID::  d: {d}')
-            return
+            return 1
         if ALARM_ID in command:
             abs_or_rel = d[1]
             sev = d[2]
@@ -576,12 +575,12 @@ def bt_data_processing(payload):
             if abs_or_rel == 'r':
                 alarm.set_alarm(severity=sev, rel_time=time_length)
             print(f'ALARM_ID:: abs_or_rel: {abs_or_rel}, sev: {sev}, time_lenght: {time_length}')
-            return 
+            return  1
             
         print(f'No recognised command: {d}')
         led_err.duty_u16(int(65535))
         led_ok.duty_u16(int(0))
-        return
+        return 0
     else:
         if is_crc_ok == False:
             print('CRC failed')
@@ -589,7 +588,7 @@ def bt_data_processing(payload):
             print('Integrety check failed')
         led_err.duty_u16(int(65535))
         led_ok.duty_u16(int(0))
-    return 
+    return 0
 
 
 while True:
@@ -599,9 +598,14 @@ while True:
             #bt_data_processing(payload_list[-1])
             if hashlib.sha256(central_address).digest() in allowed_central_list:
                 print(f'Central address verified, {central_address}')
-                bt_data_processing(payload_list[-1])
-                led_err.duty_u16(int(0))
-                led_ok.duty_u16(int(65535))
+                if bt_data_processing(payload_list[-1]):
+                    led_err.duty_u16(int(0))
+                    led_ok.duty_u16(int(65535))
+                    with open('command_counter.json', 'w') as f: # Moved the counter updater here to avoid updating it when CRC fails.
+                        json.dump(command_counter, f)
+                        print(f'Updating command_counter.json: {command_counter} \n')
+                else:
+                    print(f'Failure statue')
             else:
                 print(f'Central address NOT verified. Dropping data.  {hashlib.sha256(central_address).digest()}, {central_address}, {payload_list}')
                 led_err.duty_u16(int(65535))
