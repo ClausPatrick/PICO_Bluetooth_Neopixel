@@ -23,6 +23,19 @@ with open('command_counter.json', 'r') as f:
     print(f'command_counter: {command_counter} \n')
 
 
+CRC_POLY = 0xEDB88320
+CRC_table = array.array('L')
+for byte in range(256):
+    crc = 0
+    for bit in range(8):
+        if (byte ^ crc) & 1:
+            crc = (crc >> 1) ^ CRC_POLY
+        else:
+            crc >>= 1
+        byte >>= 1
+    CRC_table.append(crc)
+
+
 # Setting up HW peripheries.   
 led_onboard = machine.Pin(25, machine.Pin.OUT)
 led_onboard.value(1)
@@ -75,13 +88,14 @@ class Clock():
         self.enable_display_daylight_adjustment = True
         self.is_synced = False
         
-    def time_formatter(self, ticks):
+    @staticmethod
+    def time_formatter(ticks):
         '''Var ticks (0 to 24*60) to timeformat HhMm. '''        
         assert ticks <= (24 * 60)
         h = '00' + str((ticks) // 60)
         m = '00' + str((ticks) % 60)
-        t = h[-2:] + m[-2:]
-        return t
+        return h[-2:] + m[-2:]
+        
     
     
     def ticker(self):
@@ -100,14 +114,14 @@ class Clock():
         c_sync = (data[:4][0:2], data[:4][2:4])
         f_sync = int(data[-2:])
         ticks_new = (int(c_sync[0]) * 60) + int((c_sync[1]))
-        print(f'time_to_ticks:: data: {data}, {type(data)}, c_sync: {c_sync}, f_sync: {f_sync}, ticks_new: {ticks_new}')
+        print(f'time_to_ticks:: data: {data}, c_sync: {c_sync}, f_sync: {f_sync}, ticks_new: {ticks_new}')
         return (ticks_new, f_sync)
     
     def clock_sync(self, data):
         print(f'clock_sync:: data: {data}')
         assert len(data) == 6 and isinstance(data, str)
         ticks, tick_quarter = self.time_to_ticks(data)
-        print(f'clock_sync:: data:{data}, {type(data)}, ticks: {ticks}, tick_quarter: {tick_quarter}')
+        print(f'clock_sync:: data:{data}, ticks: {ticks}, tick_quarter: {tick_quarter}')
         self.sync_buffer = data
         self.ticks = ticks
         self.tick_quarter = tick_quarter
@@ -309,17 +323,66 @@ class LED_admin():
         self.sparkel_timer = Timer()
         self.sparkel_timer.init(freq=2, mode=Timer.PERIODIC, callback=sparkel_func)     
 
+class Alarm():
+    def __init__(self):
+        self.abs_time = 0
+        self.rel_time = 0
+        self.severity = 3
+        
+    
+    def indicator(self, severity=3):
+        if severity == 0:
+            print(f'###Alarm:: indicator:: {self.abs_time}, {self.rel_time}, {severity}###')
+        if severity == 1:
+            print(f'***Alarm:: indicator:: {self.abs_time}, {self.rel_time}, {severity}***')
+        if severity == 2:
+            print(f'---Alarm:: indicator:: {self.abs_time}, {self.rel_time}, {severity}---')
+        if severity == 3:
+            print(f'...Alarm:: indicator:: {self.abs_time}, {self.rel_time}, {severity}...')
+            
+    def set_alarm(self, severity=3, abs_time=None, rel_time=None):
+        if severity != None:
+            self.severity = severity
+        current_ticks = clock.ticks
+        if abs_time != None:
+            self.abs_time = int(clock.time_to_ticks(abs_time)[0])
+            many_ticks_to_alarm = self.abs_time
+    
+            ticks_counter = abs(((many_ticks_to_alarm - current_ticks) * 60) - 60)
+            print(f'set_alarm::: abs_time:: many_ticks_to_alarm: {many_ticks_to_alarm}, current_ticks: {current_ticks}, ticks_counter: {ticks_counter}')
+        elif rel_time != None:
+            self.rel_time = int(rel_time)
+            ticks_counter = self.rel_time
+            
+        else:
+            ticks_counter = 10
+            print(f'set_alarm:: No time specified. Going with default: {ticks_counter} sec')
+        timer_freq = 1 / (ticks_counter+1)
+        def alarm_counter_timer_func(timer):
+            print(f'alarm_counter_timer_func:: {abs_time}, {rel_time}, {severity}, {timer_freq}')
+            self.indicator(severity=int(severity))
+            
+        self.alarm_timer = Timer()
+        self.alarm_timer.init(freq=timer_freq, mode=Timer.ONE_SHOT, callback=alarm_counter_timer_func)
+        print(f'set_alarm:: Timer set for: {clock.time_formatter(many_ticks_to_alarm)}, now: {clock.time_formatter(current_ticks)}, {abs_time}, {rel_time}, {severity}, {timer_freq}- done')
+        
+
+        
+        
+
+alarm = Alarm()
+
 
 # Init routine:
 pixels = LED_admin()
 pixels.sparkel()
-pixels.set_zone(zone_nr=0, rgb_str=(255, 0, 255))
+pixels.set_zone(zone_nr=0, rgb_str='402005')
 utime.sleep_ms(5)
-pixels.set_zone(zone_nr=1, rgb_str='0000ff')
+pixels.set_zone(zone_nr=1, rgb_str='402005')
 utime.sleep_ms(5)
-pixels.set_zone(zone_nr=2, rgb_str='00ff00')
+pixels.set_zone(zone_nr=2, rgb_str='402005')
 utime.sleep_ms(5)
-pixels.set_zone(zone_nr=3, rgb_str=(255, 0, 0))
+pixels.set_zone(zone_nr=3, rgb_str='402005')
 utime.sleep_ms(5)
 
 drawer_opened = 0
@@ -391,6 +454,7 @@ DAYLIGHT_ID = 'DAL' # RGB
 CUSTOM_ID = 'CDP' # RGB, PWM
 TEST_ID = 'TST'
 ENCRYPT_ID = 'ENC'
+ALARM_ID = 'ALM'
 
 
 def decrypt(cmd):
@@ -403,15 +467,36 @@ def decrypt(cmd):
         key_index = i % key_lenght
         key_mask = ord(key[key_index]) & 0b00011111
         new += ''.join(chr(b ^ key_mask))
-    print(f'decrypt:: clean: {cmd},  new: {new}\n')    
+    print(f'decrypt:: clean: {cmd},  new: {new}, {key}\n')    
     return new 
     
+
+
+def check_crc(cmd):
+    '''List of strings that were seperated by ':'. Last entry is CRC. Calculating CRC on :-1 of the list and compare
+        it with the provided CRC. Returning Boolean.'''
+    assert isinstance(cmd, (list, tuple)), "Input not list or tuple"
+    def crc32(string):
+        v = 0xffffffff
+        for c in string:
+            v = CRC_table[(ord(c) ^ v) & 0xff] ^ (v >> 8)
+        return -1 - v
+    cmd_minus_crc = ''
+    for cs in cmd[:-1]:
+        cmd_minus_crc = cmd_minus_crc + str(cs) + ":"
+    allgood = str(hex(crc32(cmd_minus_crc) & 0xffffffff)[2:]) == cmd[-1]
+    return allgood
 
 def counter_integrity_check(cmd):
     ''' Security measure. Receiver expects to receive a counter value for each command that is higher than the own one.
     This prevents a previously captured stream to be accepted when resent. It matters not how much higher so in case
     a previously failed communication attempt does not lock up the receiver. '''
-    current_counter = command_counter[cmd[:3]]
+    try:
+        current_counter = command_counter[cmd[:3]]
+    except KeyError:
+        print(f'counter_integrity_check:: command not found for {cmd}')
+        allgood = False
+        return allgood
     counter_rx = int(cmd[3:])
     print(f'counter_integrity_check:: current_counter: {current_counter}, counter_rx: {counter_rx}')
     allgood = current_counter < counter_rx
@@ -432,8 +517,11 @@ def bt_data_processing(payload):
     decrypted = decrypt(payload)
     d = decrypted.split(':')
     print(f'processing payload: {decrypted}, d: {d}')
-    if counter_integrity_check(d[0]):
-        print('Integrety check passed')
+    
+    is_counter_ok = counter_integrity_check(d[0])
+    is_crc_ok = check_crc(d)
+    if is_counter_ok and is_crc_ok:
+        print('Integrety check CRC passed')
         command = d[0]
 
         if ABSOLUTE_INDEX_ID in command:
@@ -442,36 +530,65 @@ def bt_data_processing(payload):
             rgb = d[3]
             print(f'ABSOLUTE_INDEX_ID:: {d}, {start}, {end}, {rgb}')
             pixels.set_absolute(start, end, rgb)
+            return
         if ZONE_INDEX_ID in command:
             zone_id = int(d[1], 16)
             rgb = d[2]
             print(f'ZONE_INDEX_ID:: {d}, {zone_id}, {rgb}')
             pixels.set_zone(zone_id, rgb)
+            return
         if GRADIENT_ID in command:
             start = int(d[1][:4])
             end = int(d[1][4:])
             rgb = d[2]
             print(f'GRADIENT_ID:: {d}, {start}, {end}, {rgb}')
+            return
         if TIME_SYNC_ID in command:
             time_stamp = d[1]
             clock.clock_sync(time_stamp)
+            return
         if BRIGHTNESS_ID in command:
             rgb = d[1]
             pixels.set_brightness(rgb)
             print(f'BRIGHTNESS_ID:: {rgb}')
+            return
         if DAYLIGHT_ID in command:
             rgb = d[1]
             pixels.set_daylight(rgb)
             print(f'DAYLIGHT_ID:: {rgb}')
+            return
         if CUSTOM_ID in command:
             mes = d[1]
             pwm = d[2]
             clock.custom_write(mes, pwm)
             print(f'CUSTOM_ID:: mes: {mes}, pwm: {pwm}')
+            return
         if TEST_ID in command:
             print(f'TEST_ID::  d: {d}')
+            return
+        if ALARM_ID in command:
+            abs_or_rel = d[1]
+            sev = d[2]
+            time_length = d[3]
+            #print(f'ALARM_ID:: d: {d}, abs_or_rel: {abs_or_rel}, sev: {sev}, time_lenght: {time_length}')
+            if abs_or_rel == 'a':
+                alarm.set_alarm(severity=sev, abs_time=time_length)
+            if abs_or_rel == 'r':
+                alarm.set_alarm(severity=sev, rel_time=time_length)
+            print(f'ALARM_ID:: abs_or_rel: {abs_or_rel}, sev: {sev}, time_lenght: {time_length}')
+            return 
+            
+        print(f'No recognised command: {d}')
+        led_err.duty_u16(int(65535))
+        led_ok.duty_u16(int(0))
+        return
     else:
-        print('Integrety check failed')
+        if is_crc_ok == False:
+            print('CRC failed')
+        if is_counter_ok == False:
+            print('Integrety check failed')
+        led_err.duty_u16(int(65535))
+        led_ok.duty_u16(int(0))
     return 
 
 
@@ -483,9 +600,12 @@ while True:
             if hashlib.sha256(central_address).digest() in allowed_central_list:
                 print(f'Central address verified, {central_address}')
                 bt_data_processing(payload_list[-1])
+                led_err.duty_u16(int(0))
+                led_ok.duty_u16(int(65535))
             else:
                 print(f'Central address NOT verified. Dropping data.  {hashlib.sha256(central_address).digest()}, {central_address}, {payload_list}')
-
+                led_err.duty_u16(int(65535))
+                led_ok.duty_u16(int(0))
         in_data = uart.read(1)
         rx_data += in_data
 
@@ -527,6 +647,3 @@ while True:
                 #print(f'wholeframe: {wholeframe}')
                 
             
-        
-            
-
