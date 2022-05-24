@@ -429,7 +429,6 @@ ALARM_ID = 'ALM'
 
 class BT_processor():
     key = private_key.key
-    #key = '!1)%()+3%@6&^'
     allowed_central_list = MAC_hash_list.hashlist
 
     def __init__(self):
@@ -437,6 +436,8 @@ class BT_processor():
         self.CRC_check = False
         self.command_counter_check = False
         self.command_counter = command_counter
+        self.payload_split = []
+        self.payload_decrypted = ''
         with open('command_counter.json', 'r') as f:
             self.command_counter = json.loads(f.read())
             print(f'command_counter: {self.command_counter} \n')
@@ -453,6 +454,10 @@ class BT_processor():
                 byte >>= 1
             self.CRC_table.append(crc)
 
+    def error_handler(self, error_type, data):
+        print(f'BT_processor::: error_handler:: error_type: {error_type}, {data}')
+        led_err.duty_u16(int(65535))
+        led_ok.duty_u16(int(0))
         
     def MAC_whitelist_check(self, MAC_address):
         self.MAC_check = False
@@ -473,25 +478,28 @@ class BT_processor():
         print(f'decrypt:: clean: {cmd},  new: {new}')    
         return new 
 
-    def check_crc(self, cmd):
+    def check_crc(self):
         def crc32(string):
             v = 0xffffffff
             for c in string:
                 v = CRC_table[(ord(c) ^ v) & 0xff] ^ (v >> 8)
             return -1 - v
-        crc_received = int(cmd[-8:], 16)
-        message = cmd[:-8]
+        d = self.payload_split
+        cmd = self.payload_decrypted
+        crc_received = int(d[-1], 16)
+
+        message = cmd[:-len(d[-1])]
         crc_result = crc32(message) & 0xffffffff
         self.CRC_check = crc_result == crc_received
-        print(f'check_crc:: cmd: {cmd}, rx: {crc_received}, m: {message}, res: {crc_result}, ?: {self.CRC_check}')
+        print(f'check_crc:: cmd: {self.payload_decrypted}, rx: {crc_received}, m: {message}, res: {crc_result}, ?: {self.CRC_check}')
 
 
-    def counter_integrity_check(self, cmd):
+    def counter_integrity_check(self):
         ''' Security measure. Receiver expects to receive a counter value for each command that is higher than the own one.
         This prevents a previously captured stream to be accepted when resent. It matters not how much higher so in case
         a previously failed communication attempt does not lock up the receiver. '''
-        cmd_d = cmd.split(':')
-        print(f'counter_integrity_check:: cmd: {cmd}, cmd_d: {cmd_d}')
+        cmd_d = self.payload_split
+        print(f'counter_integrity_check:: cmd: {self.payload_decrypted}, cmd_d: {cmd_d}')
         try:
             current_counter = self.command_counter[cmd_d[0][:3]]
         except KeyError:
@@ -503,8 +511,8 @@ class BT_processor():
         if self.command_counter_check:
             self.command_counter[cmd_d[0][:3]] = counter_rx # Possible issue. In Memory, this var is being changed. Upon next succesful pass on another command, it is written to file still. Not goood.
 
-    def parse(self, cmd):
-        d = cmd.split(':')
+    def parse(self):
+        d = self.payload_split
         command = d[0]
         if ABSOLUTE_INDEX_ID in command:
             start = int(d[1])
@@ -559,27 +567,32 @@ class BT_processor():
                 alarm.set_alarm(severity=sev, rel_time=time_length)
             print(f'ALARM_ID:: abs_or_rel: {abs_or_rel}, sev: {sev}, time_lenght: {time_length}')
             return  1
+        return 0
 
-    def error_handler(self, error_type, data):
-        print(f'BT_processor::: error_handler:: error_type: {error_type}, {data}')
+
 
     def process(self, MAC_address, payload):
-        self.MAC_whitelist_check(MAC_address)
-        if not self.MAC_check:
+        
+        self.MAC_whitelist_check(MAC_address) # Checking MAC address against white list.
+        if not self.MAC_check: 
             self.error_handler('MAC_WHITELIST', (MAC_address, payload))
             return 0
-        payload_decrypted = self.decrypt(payload)
-        print(payload, payload_decrypted)
-        self.check_crc(payload_decrypted)
+        self.payload_decrypted = self.decrypt(payload) # Decrypt, if MAC is ok.
+        self.payload_split = self.payload_decrypted.split(':')
+        self.check_crc() # Checking CRC. If decryption went wrong it should be caught here.
         if not self.CRC_check:
-            self.error_handler('CRC', (MAC_address, payload_decrypted))
+            self.error_handler('CRC', (MAC_address))
             return 0
-        self.counter_integrity_check(payload_decrypted)
+        self.counter_integrity_check() # Checking received cmd counter against own counter. Rx should be higher than own.
         if not self.command_counter_check:
-        #if self.command_counter_check:
-            self.error_handler('COMMAND_COUNTER', (MAC_address, payload_decrypted))
+            self.error_handler('COMMAND_COUNTER', (MAC_address))
             return 0
-        self.parse(payload_decrypted)
+        if not self.parse():
+            self.error_handler('NOT_A_COMMAND', (MAC_address))
+            return 0
+        led_err.duty_u16(int(0))
+        led_ok.duty_u16(int(65535))
+        return 1
 
 BT = BT_processor()
 
@@ -612,7 +625,7 @@ while True:
         if is_connected and is_data:
             if disconnect_syntax in rx_data:
                 led_err.duty_u16(int(5000))
-                led_ok.duty_u16(int(5000))
+                led_ok.duty_u16(int(50000))
                 is_data = False
                 is_MAC = True
                 is_connected = False
