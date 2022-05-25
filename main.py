@@ -78,69 +78,112 @@ sm.active(1)
 
 
 class Clock():
-    '''Keeping track of time, synchronising to central, formatting time such it can be displayed.'''    
     def __init__(self):
         self.ticks = 0
-        self.tick_quarter = 0
-        self.sync_buffer = 0
-        self.sec_counter = 0
-        self.display_pwm = 0x00ff
+        self.current_time = '000000'
+        self.alarm_list = {}
+        self.display_pwm = 0xffff
+        self.ticker()
         self.enable_display_daylight_adjustment = True
-        self.is_synced = False
         
-    @staticmethod
-    def time_formatter(ticks):
-        '''Var ticks (0 to 24*60) to timeformat HhMm. '''        
-        assert ticks <= (24 * 60)
-        h = '00' + str((ticks) // 60)
-        m = '00' + str((ticks) % 60)
-        return h[-2:] + m[-2:]
-        
-    
-    
-    def ticker(self):
-        '''Var ticks counts from 0 to 24*60 for each minute. Var tick_quarter is actually seconds. '''        
-        def ticker_func(timer):            
-            if self.tick_quarter == 0:
-                self.ticks = (self.ticks + 1) % (24 * 60)
-                time_formatted = self.time_formatter(self.ticks)                    
-                cd.transmit(time_formatted, red=0, pwm_duty = (self.display_pwm//1))
-            self.tick_quarter = (self.tick_quarter + 1) % 60
-        self.ticker_timer = Timer()
-        self.ticker_timer.init(freq=1, mode=Timer.PERIODIC, callback=ticker_func)  
-    
     @staticmethod
     def time_to_ticks(data):
-        c_sync = (data[:4][0:2], data[:4][2:4])
-        f_sync = int(data[-2:])
-        ticks_new = (int(c_sync[0]) * 60) + int((c_sync[1]))
-        print(f'time_to_ticks:: data: {data}, c_sync: {c_sync}, f_sync: {f_sync}, ticks_new: {ticks_new}')
-        return (ticks_new, f_sync)
+        data = ('000000' + (data + '00')[:6])[-6:] # Ensuring string is always 6 in len.
+        h_m_s = (data[0:2], data[2:4], data[4:6])
+        time_coeff = (60**2, 60, 1)
+        ticks_new = sum(list(map(lambda x, y: int(x) * y, h_m_s, time_coeff)))
+        #print(f'time_to_ticks:: data: {data},  h_m_s: {h_m_s}, ticks_new: {ticks_new}')
+        return ticks_new
     
+    @staticmethod
+    def time_formatter(ticks):
+        ticks = int(ticks)
+        h = ('00' + str(ticks // 60**2))[-2:]
+        m = ('00' + str((ticks % 60**2)//60))[-2:]
+        s = ('00' + str(ticks % 60))[-2:]
+        return h + m + s   
+    
+    def ticker(self):     
+          
+        def ticker_func(timer):            
+            self.ticks = (self.ticks + 1) % (24 * 60 * 60)
+            self.current_time = self.time_formatter(self.ticks)
+            self.display_current_time()
+            if self.ticks in self.alarm_list:
+                print(f'ticker:: Alarm: Now: {self.ticks}, {self.current_time}, alarm set for: {self.alarm_list[self.ticks]}')
+                self.notify(self.alarm_list[self.ticks])                
+                if not self.alarm_list[self.ticks]['persistence']:
+                    del self.alarm_list[self.ticks]             
+
+        self.ticker_timer = Timer()
+        self.ticker_timer.init(freq=1, mode=Timer.PERIODIC, callback=ticker_func)
+        print(f'ticker:: ticks: {self.ticks}, current_time: {self.current_time}')
+
     def clock_sync(self, data):
         print(f'clock_sync:: data: {data}')
         assert len(data) == 6 and isinstance(data, str)
-        ticks, tick_quarter = self.time_to_ticks(data)
-        print(f'clock_sync:: data:{data}, ticks: {ticks}, tick_quarter: {tick_quarter}')
+        new_ticks = self.time_to_ticks(data)
+        print(f'clock_sync:: data:{data}, ticks: {new_ticks}')
         self.sync_buffer = data
-        self.ticks = ticks
-        self.tick_quarter = tick_quarter
-        time_formatted = self.time_formatter(self.ticks)
-        cd.transmit(time_formatted, red=0, pwm_duty=(self.display_pwm//1))
+        self.ticks = new_ticks
+        self.current_time = self.time_formatter(self.ticks)
+        self.display_current_time()
+        
+            
+    def set_alarm(self, severity=3, abs_time=None, rel_time=None, duration=5, persistence=False):
+        if severity != None:
+            self.severity = severity
+        current_ticks = clock.ticks
+        if duration != None:
+            self.duration = duration
+        if abs_time != None:
+            self.alarm_time_to_ticks = self.time_to_ticks(abs_time)
+            self.alarm_list[self.alarm_time_to_ticks] = {'severity': severity, 'duration': duration, 'persistence': persistence}
+            ticks_counter = abs(((self.alarm_time_to_ticks - current_ticks) * 1) - 0)
+            print(f'set_alarm::: a:: alarm_time_to_ticks: {self.alarm_time_to_ticks}, current_ticks: {self.ticks}, time: {self.current_time}')
+        elif rel_time != None:
+            self.rel_time = int(rel_time)
+            ticks_counter = self.rel_time
+            
+        else:
+            ticks_counter = 10
+            print(f'set_alarm:: No time specified. Going with default: {ticks_counter} sec')
+    
+        
+    def notify(self, alarm_dict):
+        sev = alarm_dict['severity']
+        dur = alarm_dict['duration']
+
+        if sev == 0:
+            print(f'Alarm sev {sev} for {dur}')
+        if sev == 1:
+            print(f'Alarm sev {sev} for {dur}')
+        if sev == 2:
+            print(f'Alarm sev {sev} for {dur}')
+        if sev == 3:
+            print(f'Alarm sev {sev} for {dur}')
+        if sev == 4:
+            print(f'Alarm sev {sev} for {dur}')
+    
+    def display_current_time(self):
+        #print(f'display_current_time:: {self.current_time[:4]}, {self.display_pwm}')
+        cd.transmit(self.current_time[:4], red=0, pwm_duty=(self.display_pwm))
+        
+    def custom_write(self, data, pwm=None):
+        assert isinstance(data, str)
+        data = ('0000' + data)[-4:]
+        if pwm != None:
+            self.set_pwm(pwm)
+        else:
+            pwm = self.display_pwm
+        cd.transmit(data, red=0, pwm_duty=pwm)
         
     def set_pwm(self, data):
         pwm = int(data)
         assert (data >= 0) and (data <= 0xffff)
         self.display_pwm = data
-        time_formatted = self.time_formatter(self.ticks)
-        cd.transmit(time_formatted, red=0, pwm_duty = (self.display_pwm//1))
-        print(f'PWM set to: {data}')
-        
-    def custom_write(self, data, pwm=None):
-        if pwm != None:
-            self.set_pwm(pwm)
-        cd.transmit(data, red=0, pwm_duty=self.display_pwm//1)
-        
+        print(f'set_pwm:: PWM set to: {data}')
+        self.display_current_time()   
         
     
 
@@ -322,58 +365,12 @@ class LED_admin():
         self.sparkel_timer = Timer()
         self.sparkel_timer.init(freq=2, mode=Timer.PERIODIC, callback=sparkel_func)     
 
-class Alarm():
-    def __init__(self):
-        self.abs_time = 0
-        self.rel_time = 0
-        self.severity = 3
-        
-    
-    def indicator(self, severity=3):
-        if severity == 0:
-            print(f'###Alarm:: indicator:: {self.abs_time}, {self.rel_time}, {severity}###')
-        if severity == 1:
-            print(f'***Alarm:: indicator:: {self.abs_time}, {self.rel_time}, {severity}***')
-        if severity == 2:
-            print(f'---Alarm:: indicator:: {self.abs_time}, {self.rel_time}, {severity}---')
-        if severity == 3:
-            print(f'...Alarm:: indicator:: {self.abs_time}, {self.rel_time}, {severity}...')
-            
-    def set_alarm(self, severity=3, abs_time=None, rel_time=None):
-        if severity != None:
-            self.severity = severity
-        current_ticks = clock.ticks
-        if abs_time != None:
-            self.abs_time = int(clock.time_to_ticks(abs_time)[0])
-            many_ticks_to_alarm = self.abs_time
-    
-            ticks_counter = abs(((many_ticks_to_alarm - current_ticks) * 60) - 60)
-            print(f'set_alarm::: abs_time:: many_ticks_to_alarm: {many_ticks_to_alarm}, current_ticks: {current_ticks}, ticks_counter: {ticks_counter}')
-        elif rel_time != None:
-            self.rel_time = int(rel_time)
-            ticks_counter = self.rel_time
-            
-        else:
-            ticks_counter = 10
-            print(f'set_alarm:: No time specified. Going with default: {ticks_counter} sec')
-        timer_freq = 1 / (ticks_counter+1)
-        def alarm_counter_timer_func(timer):
-            print(f'alarm_counter_timer_func:: {abs_time}, {rel_time}, {severity}, {timer_freq}')
-            self.indicator(severity=int(severity))
-            
-        self.alarm_timer = Timer()
-        self.alarm_timer.init(freq=timer_freq, mode=Timer.ONE_SHOT, callback=alarm_counter_timer_func)
-        print(f'set_alarm:: Timer set for: {clock.time_formatter(many_ticks_to_alarm)}, now: {clock.time_formatter(current_ticks)}, {abs_time}, {rel_time}, {severity}, {timer_freq}- done')
-        
 
         
-        
-clock = Clock()
-clock.ticker()
-alarm = Alarm()
 
 
 # Init routine:
+clock = Clock()
 pixels = LED_admin()
 pixels.sparkel()
 pixels.set_zone(zone_nr=0, rgb_str='402005')
@@ -560,11 +557,17 @@ class BT_processor():
             abs_or_rel = d[1]
             sev = d[2]
             time_length = d[3]
+            duration = 10
+            if len(d) > 5:
+                duration = int(d[4])
+            persistence = False
+            if len(d) > 6:
+                persistence = int(d[5])
             #print(f'ALARM_ID:: d: {d}, abs_or_rel: {abs_or_rel}, sev: {sev}, time_lenght: {time_length}')
             if abs_or_rel == 'a':
-                alarm.set_alarm(severity=sev, abs_time=time_length)
+                clock.set_alarm(severity=sev, abs_time=time_length, duration=duration, persistence=persistence)
             if abs_or_rel == 'r':
-                alarm.set_alarm(severity=sev, rel_time=time_length)
+                clock.set_alarm(severity=sev, rel_time=time_length, duration=duration, persistence=persistence)
             print(f'ALARM_ID:: abs_or_rel: {abs_or_rel}, sev: {sev}, time_lenght: {time_length}')
             return  1
         return 0
@@ -572,7 +575,6 @@ class BT_processor():
 
 
     def process(self, MAC_address, payload):
-        
         self.MAC_whitelist_check(MAC_address) # Checking MAC address against white list.
         if not self.MAC_check: 
             self.error_handler('MAC_WHITELIST', (MAC_address, payload))
