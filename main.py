@@ -10,6 +10,7 @@ import json
 import hashlib
 import MAC_hash_list
 import private_key
+from micropython import const
 
 
 # Loading external values.
@@ -17,7 +18,7 @@ key = private_key.key
 allowed_central_list = MAC_hash_list.hashlist
 NUM_LEDS = 57
 
-CRC_POLY = 0xEDB88320
+CRC_POLY = const(0xEDB88320)
 CRC_table = array.array('L')
 for byte in range(256):
     crc = 0
@@ -73,15 +74,20 @@ sm.active(1)
 
 class Clock():
     def __init__(self):
+        self.alarm_list = {}
+        with open('alarm_list.log', 'r') as f:
+            alarm_strs = json.loads(f.read())
+            for key, val in alarm_strs.items(): # Preferably the keys are stored as ints however json sets them to str.
+                self.alarm_list[int(key)] = val
+            print(f'Clock:: alarm_list: {self.alarm_list} \n')
         self.ticks = 0
         self.current_time = '000000'
-        self.alarm_list = {}
+        #self.alarm_list = {}
         self.display_pwm = 0x01ff
-        self.ticker()
+        self.action_ticker = 0
         self.enable_display_daylight_adjustment = True
-        with open('alarm_list.log', 'r') as f:
-            self.alarm_list = json.loads(f.read())
-            print(f'Clock:: alarm_list: {self.alarm_list} \n')
+        self.alarm_flasher_frequency = 4
+        self.ticker()
         
     @staticmethod
     def time_to_ticks(data):
@@ -110,13 +116,21 @@ class Clock():
                 self.notify(self.alarm_list[self.ticks])                
                 if not self.alarm_list[self.ticks]['persistence']:
                     del self.alarm_list[self.ticks]
-                    with open('alarm_list.log', 'w') as f:
-                        json.dump(self.alarm_list, f)
+                    self.store_alarm_list()
                     print(f'ticker_func:: Alarm entry was not persistant so it got removed. Alarm entries: {len(self.alarm_list)}')
-
+        
         self.ticker_timer = Timer()
         self.ticker_timer.init(freq=1, mode=Timer.PERIODIC, callback=ticker_func)
         print(f'ticker:: ticks: {self.ticks}, current_time: {self.current_time}')
+        
+    def store_alarm_list(self):
+        '''Alarm list is dictionary with int keys (rel time) and their attributes but are stored 
+        as str keys (rel time) in json format.'''
+        alarm_strs = {}
+        for key, val in self.alarm_list.items():
+            alarm_strs[str(key)] = val
+        with open('alarm_list.log', 'w') as f:
+            json.dump(alarm_strs, f)        
 
     def clock_sync(self, data):
         print(f'clock_sync:: data: {data}')
@@ -133,62 +147,94 @@ class Clock():
         if severity != None:
             self.severity = severity
         current_ticks = clock.ticks
+        self.duration = 5
         if duration != None:
             self.duration = duration
         if abs_time != None:
             self.alarm_time_to_ticks = self.time_to_ticks(abs_time)
-            self.alarm_list[self.alarm_time_to_ticks] = {'severity': severity, 'duration': duration, 'persistence': persistence, 'abs_time': abs_time}
-            ticks_counter = abs(((self.alarm_time_to_ticks - current_ticks) * 1) - 0)
-            print(f'set_alarm::: a:: alarm_time_to_ticks: {self.alarm_time_to_ticks}, current_ticks: {self.ticks}, time: {self.current_time}, alarm entries: {len(self.alarm_list)}')
+            alarm_atributes = {'severity': severity, 'duration': duration, 'persistence': persistence, 'abs_time': abs_time}
+            self.alarm_list[self.alarm_time_to_ticks] = alarm_atributes
+            ticks_counter = abs(self.alarm_time_to_ticks - current_ticks)
+            print(f'set_alarm::: a:: alarm_time_to_ticks: {self.alarm_time_to_ticks}, current_ticks: {self.ticks}, time: {self.current_time}, alarm entries: {len(self.alarm_list)}, attributes: {alarm_atributes}')
         elif rel_time != None:
             self.rel_time = int(rel_time)
-            ticks_counter = self.rel_time + self.ticks
+            ticks_counter = self.rel_time + self.ticks 
             self.alarm_list[ticks_counter] = {'severity': severity, 'duration': duration, 'persistence': persistence, 'rel_time': rel_time}
-            print(f'set_alarm::: r:: ticks_counter: {seticks_counter}, current_ticks: {self.ticks}, time: {self.current_time}, alarm entries: {len(self.alarm_list)}')
+            print(f'set_alarm::: r:: ticks_counter: {ticks_counter}, current_ticks: {self.ticks}, time: {self.current_time}, alarm entries: {len(self.alarm_list)}')
         else:
             ticks_counter = 10
             print(f'set_alarm:: No time specified. Going with default: {ticks_counter} sec')
-        with open('alarm_list.log', 'w') as f:
-            json.dump(self.alarm_list, f)
-            print(f'set_alarm:: alarm_list saved')
+        self.store_alarm_list()
+        print(f'set_alarm:: alarm_list saved')
             
             
-    def delete_alarm(self, abs_time=None, rel_time=None):
-        if abs_time != None:
-            self.alarm_time_to_ticks = self.time_to_ticks(abs_time)
-            try:
-                print(f'delete_alarm:: Alarm {self.alarm_time_to_ticks} for {self.time_formatter(self.alarm_time_to_ticks)} deleted.')
-                del self.alarm_list[self.alarm_time_to_ticks]
-                
-            except KeyError:
-                print(f'delete_alarm:: Alarm {self.alarm_time_to_ticks} for {self.time_formatter(self.alarm_time_to_ticks)} not found.')
-            print(f'delete_alarm::: a:: alarm_time_to_ticks: {self.alarm_time_to_ticks}, current_ticks: {self.ticks}, time: {self.current_time}')
-        elif rel_time != None:
-            self.rel_time = int(rel_time)
-            ticks_counter = self.rel_time
-                     
-        with open('alarm_list.log', 'w') as f:
-            json.dump(self.alarm_list, f)
-            print(f'set_alarm:: alarm_list saved')    
+    def delete_alarm(self, abs_time):
+        '''Alams will only be deleted with their absolute time designation.'''
+        self.alarm_time_to_ticks = self.time_to_ticks(abs_time)
+        try:
+            del self.alarm_list[self.alarm_time_to_ticks]
+            print(f'delete_alarm:: Alarm {self.alarm_time_to_ticks} for {self.time_formatter(self.alarm_time_to_ticks)} deleted.')
+        except KeyError:
+            print(f'delete_alarm:: Alarm {self.alarm_time_to_ticks} for {self.time_formatter(self.alarm_time_to_ticks)} not found.')
+        print(f'delete_alarm::: a:: alarm_time_to_ticks: {self.alarm_time_to_ticks}, current_ticks: {self.ticks}, time: {self.current_time}')
+        self.store_alarm_list()
+        print(f'set_alarm:: alarm_list saved')
+            
+            
+    def pwm_flicker(self, sev=0):
+        self.display_current_time(pwm=(0xffff // ((self.action_ticker%2)+1)))
+        return 
+        
+    def gradient_flash(self): # set_gradient(self, data): # (start, startRGB, m, mRGB, n, nRGB, end, endRGB)
+        self.idx = self.action_ticker / self.flash_ticks
+        middle = int(self.idx * NUM_LEDS)
+        pixels.set_gradient(['0', '00ff00', str(middle), '0000ff', str(NUM_LEDS), '00ff00'])
+        return            
         
     def notify(self, alarm_dict):
-        sev = alarm_dict['severity']
-        dur = alarm_dict['duration']
+        self.alarm_active = True
+        sev = int(alarm_dict['severity'])
+        dur = int(alarm_dict['duration'])
+        self.flash_ticks = (dur * self.alarm_flasher_frequency) + 1
+        
+        self.arr_buffer = pixels.arr
+        print(f'Setting up timer: sev: {sev}, dur: {dur}, ft: {self.flash_ticks}, {alarm_dict}')
+        
+        #self.expiration_ticker_timer.init(freq=1/dur, mode=Timer.ONE_SHOT, callback=expiration_ticker)
+        print(f'start flashing {dur}, {self.alarm_flasher_frequency}')
+        self.alarm_active = True
+                  
+            
+        def flash_ticker(timer):
+            if self.action_ticker < self.flash_ticks and self.alarm_active:
+                self.action_ticker = self.action_ticker + 1
+                print(f'action_ticker:: {self.action_ticker}, {((dur * self.alarm_flasher_frequency) + 1)}, {dur}, {self.alarm_flasher_frequency}, {alarm_dict}')
+                if sev == 0:
+                    print(f'doing sev0 shit t: {self.action_ticker}')
+                    self.gradient_flash()
+                    self.pwm_flicker()
+                if sev == 1:
+                    self.pwm_flicker()
+                
+            else:                
+                self.flash_ticker_timer.deinit()
+                self.display_current_time(pwm=self.display_pwm)
+                self.action_ticker = 0
+                self.alarm_active = False
+                pixels.arr = self.arr_buffer
+                pixels.output_to_chain(pixels.arr)
+                print('alarm timer expired')
+                return 
+                
+        self.flash_ticker_timer = Timer()
+        self.flash_ticker_timer.init(freq=self.alarm_flasher_frequency, mode=Timer.PERIODIC, callback=flash_ticker) 
 
-        if sev == 0:
-            print(f'Alarm sev {sev} for {dur}')
-        if sev == 1:
-            print(f'Alarm sev {sev} for {dur}')
-        if sev == 2:
-            print(f'Alarm sev {sev} for {dur}')
-        if sev == 3:
-            print(f'Alarm sev {sev} for {dur}')
-        if sev == 4:
-            print(f'Alarm sev {sev} for {dur}')
     
-    def display_current_time(self):
+    def display_current_time(self, pwm=None):
         #print(f'display_current_time:: {self.current_time[:4]}, {self.display_pwm}')
-        cd.transmit(self.current_time[:4], red=0, pwm_duty=(self.display_pwm))
+        if pwm == None:
+            pwm = self.display_pwm
+        cd.transmit(self.current_time[:4], red=0, pwm_duty=(pwm))
         
     def custom_write(self, data='0000', pwm=None, red_led=0, options=(0,0,0)):
         assert isinstance(data, str)
@@ -204,11 +250,8 @@ class Clock():
         assert (data >= 0) and (data <= 0xffff)
         self.display_pwm = data
         print(f'set_pwm:: PWM set to: {data}')
-        self.display_current_time()   
+        self.display_current_time()
         
-    
-
-
 class LED_admin():
     def __init__(self, NUM_LEDS=57):
         self.NUM_LEDS = NUM_LEDS
@@ -344,8 +387,7 @@ class LED_admin():
         #arr_new = array.array("I", [0 for _ in range(NUM_LEDS)])
         for i, v in enumerate(data): # Creating some lists that will make the process easier later.
             if not i%2: #First comes cooridinates on LED line.
-                #print(v, data, data[0], int(data[0]))
-                
+                print(f'set_gradient:: {v}, {data}, {data[0]}, {int(data[0])}')
                 top_point_list.append((int(v)))
                 if len(distance_list) > 0:
                     distance_list.append(int(v) - distance_list[-1])
@@ -379,7 +421,7 @@ class LED_admin():
 
     def sparkel(self, f='h', l='h', s='h'):
         new_freq = 2
-        freq_list_full = (2, 1.64, 1.25, 1.117, 1, 0.8, 0.5, 0.33, 0.1)
+        freq_list_full = (1.64, 1.25, 1.117, 1, 0.8, 0.5, 0.33, 0.1)
         freq_list = freq_list_full[:]
         def sparkel_func(timer):
             level = self.sparkel_level                        
@@ -487,7 +529,7 @@ class BT_processor():
             self.command_counter = json.loads(f.read())
             print(f'command_counter: {self.command_counter} \n')
 
-        CRC_POLY = 0xEDB88320
+        #CRC_POLY = 0xEDB88320
         self.CRC_table = array.array('L')
         for byte in range(256):
             crc = 0
@@ -554,11 +596,7 @@ class BT_processor():
         print(f'counter_integrity_check:: current_counter: {current_counter}, counter_rx: {counter_rx}')
         self.command_counter_check = current_counter < counter_rx
         if self.command_counter_check:
-            self.command_counter[cmd_d[0][:3]] = counter_rx # Possible issue. In Memory, this var is being changed. Upon next succesful pass on another command, it is written to file still. Not goood.
-
-
-
-    
+            self.command_counter[cmd_d[0][:3]] = counter_rx # Possible issue. In Memory, this var is being changed. Upon next succesful pass on another command, it is written to file still. Not goood.   
     
     def parse(self):
         d = self.payload_split
@@ -577,7 +615,7 @@ class BT_processor():
             pixels.set_zone(zone_id, rgb)
             return 1
         if GRADIENT_ID in command:
-            pattern = d[2:-1]
+            pattern = d[1:-1]
             pixels.set_gradient(pattern)
             print(f'GRADIENT_ID:: {d}, {pattern}')
             return 1
@@ -615,6 +653,7 @@ class BT_processor():
             if len(d) > 6:
                 persistence = int(d[5])
             #print(f'ALARM_ID:: d: {d}, abs_or_rel: {abs_or_rel}, sev: {sev}, time_lenght: {time_length}')
+                #To set alarm enter: -al ABS_or_REL<a/r> SEV TIME_STAMPS<000000-235959> DURATION<1-n> PERSISTANCE<0/1>. Example: <-al a 0 1234 10 0>
             if abs_or_rel == 'a':
                 clock.set_alarm(severity=sev, abs_time=time_length, duration=duration, persistence=persistence)
             if abs_or_rel == 'r':
