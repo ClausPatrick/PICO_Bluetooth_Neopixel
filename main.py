@@ -8,17 +8,98 @@ import random
 import CD4094_class
 import json
 import hashlib
-import MAC_hash_list
-import private_key
-from micropython import const
 
+file = "bt_dict.txt"
+file2 = "bt_dict.txt"
+
+
+class bt_dict_processor():
+    '''Handles storage for data pertaining to Clock and BT class. Absence of some m_python libs some wrangling is done to safe the nested dicts
+    as a string and then do the reverse. The .store_data() function should be invoked upon succesfull processing of the received BT session.'''
+    def __init__(self):
+        self.host_mac_list = {}
+        self.command_counter_template = {"AIX": 0, "ALM": 0, "DAL": 0, "TSY": 0, "CDP": 0, "TST": 0, "ZIX": 0, "BRI": 0, "ALD": 0, "GRA": 0}
+        self.alarm_list = {"21600": {"severity":"0", "duration":40, "persistence":1, "abs_time":"0600"}, "58500": {"severity": "0", "duration": 40, "persistence": 1, "abs_time": "1615"}, "60300": {"persistence": 1, "abs_time": "1645", "severity": "2", "duration": 3}, "82800": {"severity": "0", "duration": 20, "persistence": 1, "abs_time":"2300"}}
+        self.lines = None
+        self.bt_dict = {}
+        
+    def add_host(self, host_name, MAC_address):
+        self.host_mac_list[host_name.encode('ascii')] = str(hashlib.sha256(MAC_address).digest())
+        self.hosts = [k for k, v in self.host_mac_list.items()]
+        
+    def fetch_data(self):
+        with open(file, 'r') as f:
+            lines = f.readlines()
+        print('fetch_data:: lines: \n')
+        for l in lines:
+            print(l.rstrip("\r"))
+        self.lines = [l.strip('\n') for l in lines]
+        self.key = self.lines[0].strip()
+        bt_dict = {}
+        bt_dict['key'] = self.key
+        bt_dict['alarm_list'] = {}
+        chunks = self.lines[1].split(',') # Reassembling the alamr_list dictionary.
+        for chunk in chunks:
+            clean = chunk.replace('{', '').replace('}', '').replace(' ', '').rstrip("\n").split(':')
+            len_clean = len(clean)
+            if len_clean == 3:
+                alarm_id = int(clean[0])
+                bt_dict['alarm_list'][alarm_id] = {}
+                bt_dict['alarm_list'][alarm_id][clean[1]] = clean[2]
+            if len_clean == 2:
+                bt_dict['alarm_list'][alarm_id][clean[0]] = clean[1]
+        host_names = self.lines[2].replace(' ', '').strip("\r").split(',')
+        print(f'fetch_data:: host_names: {host_names}')
+        
+        bt_dict['host_names'] = host_names
+        how_many_hosts = len(host_names)
+        bt_dict['hosts'] = {}
+        bt_dict['MACs'] = []
+        for h in range(how_many_hosts):
+            host_index = h*3+3
+            name = self.lines[host_index + 0]
+            hash_mac = str(self.lines[host_index + 1].rstrip("\r"))
+            print(f'fetch_data:: hash_mac:{hash_mac}')
+            counter = self.lines[host_index + 2]
+            counter = counter.replace(' ', '').replace('{', '').replace('}', '').replace("'", "").rstrip("\n").split(',')
+            counter_list = {i.split(':')[0]:i.split(':')[1] for i in counter}
+            bt_dict['MACs'].append(hash_mac) # [:80]
+            bt_dict['hosts'][hash_mac] = {}
+            bt_dict['hosts'][hash_mac]['host_name'] = name.rstrip("\n")
+            bt_dict['hosts'][hash_mac]['counter'] = counter_list
+        self.bt_dict.update(bt_dict) # Merging local dict to class dict.
+        print('fetch_data::\n')
+        for k, v in self.bt_dict.items():
+            print(k, v)
+        print()
+        
+
+    
+    def store_data(self):
+        how_many_hosts = len(self.bt_dict['host_names'])
+        with open(file2, 'w') as f:
+            f.write(self.key + '\n')
+            f.write(str(self.alarm_list).replace("'", "") + '\n')
+            hosts = D.bt_dict['host_names']
+            f.write(str(hosts).replace("'", "")[1:-1] + '\n')
+            for i in range(how_many_hosts):
+                mac = D.bt_dict['MACs'][i]
+                counter = D.bt_dict['hosts'][mac]['counter']
+                name = D.bt_dict['hosts'][mac]['host_name']
+                f.write(str(name) + '\n')
+                f.write(str(mac) + '\n')
+                f.write(str(counter) + '\n') # command_counter_template
+
+
+    
+D = bt_dict_processor()
+D.fetch_data()
 
 # Loading external values.
-key = private_key.key
-allowed_central_list = MAC_hash_list.hashlist
+
 NUM_LEDS = 57
 
-CRC_POLY = const(0xEDB88320)
+CRC_POLY = 0xEDB88320
 CRC_table = array.array('L')
 for byte in range(256):
     crc = 0
@@ -74,20 +155,17 @@ sm.active(1)
 
 class Clock():
     def __init__(self):
-        self.alarm_list = {}
-        with open('alarm_list.log', 'r') as f:
-            alarm_strs = json.loads(f.read())
-            for key, val in alarm_strs.items(): # Preferably the keys are stored as ints however json sets them to str.
-                self.alarm_list[int(key)] = val
-            print(f'Clock:: alarm_list: {self.alarm_list} \n')
         self.ticks = 0
         self.current_time = '000000'
-        #self.alarm_list = {}
+        self.alarm_list = {}
         self.display_pwm = 0x01ff
+        self.ticker()
         self.action_ticker = 0
         self.enable_display_daylight_adjustment = True
         self.alarm_flasher_frequency = 4
-        self.ticker()
+        self.alarm_list = D.bt_dict['alarm_list']
+        
+
         
     @staticmethod
     def time_to_ticks(data):
@@ -116,21 +194,13 @@ class Clock():
                 self.notify(self.alarm_list[self.ticks])                
                 if not self.alarm_list[self.ticks]['persistence']:
                     del self.alarm_list[self.ticks]
-                    self.store_alarm_list()
+                    with open('alarm_list.log', 'w') as f:
+                        json.dump(self.alarm_list, f)
                     print(f'ticker_func:: Alarm entry was not persistant so it got removed. Alarm entries: {len(self.alarm_list)}')
-        
+
         self.ticker_timer = Timer()
         self.ticker_timer.init(freq=1, mode=Timer.PERIODIC, callback=ticker_func)
         print(f'ticker:: ticks: {self.ticks}, current_time: {self.current_time}')
-        
-    def store_alarm_list(self):
-        '''Alarm list is dictionary with int keys (rel time) and their attributes but are stored 
-        as str keys (rel time) in json format.'''
-        alarm_strs = {}
-        for key, val in self.alarm_list.items():
-            alarm_strs[str(key)] = val
-        with open('alarm_list.log', 'w') as f:
-            json.dump(alarm_strs, f)        
 
     def clock_sync(self, data):
         print(f'clock_sync:: data: {data}')
@@ -152,33 +222,34 @@ class Clock():
             self.duration = duration
         if abs_time != None:
             self.alarm_time_to_ticks = self.time_to_ticks(abs_time)
-            alarm_atributes = {'severity': severity, 'duration': duration, 'persistence': persistence, 'abs_time': abs_time}
-            self.alarm_list[self.alarm_time_to_ticks] = alarm_atributes
-            ticks_counter = abs(self.alarm_time_to_ticks - current_ticks)
-            print(f'set_alarm::: a:: alarm_time_to_ticks: {self.alarm_time_to_ticks}, current_ticks: {self.ticks}, time: {self.current_time}, alarm entries: {len(self.alarm_list)}, attributes: {alarm_atributes}')
+            self.alarm_list[self.alarm_time_to_ticks] = {'severity': severity, 'duration': duration, 'persistence': persistence, 'abs_time': abs_time}
+            ticks_counter = abs(((self.alarm_time_to_ticks - current_ticks) * 1) - 0)
+            print(f'set_alarm::: a:: alarm_time_to_ticks: {self.alarm_time_to_ticks}, current_ticks: {self.ticks}, time: {self.current_time}, alarm entries: {len(self.alarm_list)}')
         elif rel_time != None:
             self.rel_time = int(rel_time)
-            ticks_counter = self.rel_time + self.ticks 
+            ticks_counter = self.rel_time + self.ticks
             self.alarm_list[ticks_counter] = {'severity': severity, 'duration': duration, 'persistence': persistence, 'rel_time': rel_time}
-            print(f'set_alarm::: r:: ticks_counter: {ticks_counter}, current_ticks: {self.ticks}, time: {self.current_time}, alarm entries: {len(self.alarm_list)}')
+            print(f'set_alarm::: r:: ticks_counter: {seticks_counter}, current_ticks: {self.ticks}, time: {self.current_time}, alarm entries: {len(self.alarm_list)}')
         else:
             ticks_counter = 10
             print(f'set_alarm:: No time specified. Going with default: {ticks_counter} sec')
-        self.store_alarm_list()
-        print(f'set_alarm:: alarm_list saved')
+        D.store_data()
             
             
-    def delete_alarm(self, abs_time):
-        '''Alams will only be deleted with their absolute time designation.'''
-        self.alarm_time_to_ticks = self.time_to_ticks(abs_time)
-        try:
-            del self.alarm_list[self.alarm_time_to_ticks]
-            print(f'delete_alarm:: Alarm {self.alarm_time_to_ticks} for {self.time_formatter(self.alarm_time_to_ticks)} deleted.')
-        except KeyError:
-            print(f'delete_alarm:: Alarm {self.alarm_time_to_ticks} for {self.time_formatter(self.alarm_time_to_ticks)} not found.')
-        print(f'delete_alarm::: a:: alarm_time_to_ticks: {self.alarm_time_to_ticks}, current_ticks: {self.ticks}, time: {self.current_time}')
-        self.store_alarm_list()
-        print(f'set_alarm:: alarm_list saved')
+    def delete_alarm(self, abs_time=None, rel_time=None):
+        if abs_time != None:
+            self.alarm_time_to_ticks = self.time_to_ticks(abs_time)
+            try:
+                print(f'delete_alarm:: Alarm {self.alarm_time_to_ticks} for {self.time_formatter(self.alarm_time_to_ticks)} deleted.')
+                del self.alarm_list[self.alarm_time_to_ticks]
+                
+            except KeyError:
+                print(f'delete_alarm:: Alarm {self.alarm_time_to_ticks} for {self.time_formatter(self.alarm_time_to_ticks)} not found.')
+            print(f'delete_alarm::: a:: alarm_time_to_ticks: {self.alarm_time_to_ticks}, current_ticks: {self.ticks}, time: {self.current_time}')
+        elif rel_time != None:
+            self.rel_time = int(rel_time)
+            ticks_counter = self.rel_time # Not implemented yet.                     
+        D.store_data()
             
             
     def pwm_flicker(self, sev=0):
@@ -198,7 +269,7 @@ class Clock():
         self.flash_ticks = (dur * self.alarm_flasher_frequency) + 1
         
         self.arr_buffer = pixels.arr
-        print(f'Setting up timer: sev: {sev}, dur: {dur}, ft: {self.flash_ticks}, {alarm_dict}')
+        print(f'Setting up timer: sev: {sev}, dur: {dur}, f: {1/dur}, {alarm_dict}')
         
         #self.expiration_ticker_timer.init(freq=1/dur, mode=Timer.ONE_SHOT, callback=expiration_ticker)
         print(f'start flashing {dur}, {self.alarm_flasher_frequency}')
@@ -252,6 +323,9 @@ class Clock():
         print(f'set_pwm:: PWM set to: {data}')
         self.display_current_time()
         
+
+
+
 class LED_admin():
     def __init__(self, NUM_LEDS=57):
         self.NUM_LEDS = NUM_LEDS
@@ -388,6 +462,7 @@ class LED_admin():
         for i, v in enumerate(data): # Creating some lists that will make the process easier later.
             if not i%2: #First comes cooridinates on LED line.
                 print(f'set_gradient:: {v}, {data}, {data[0]}, {int(data[0])}')
+                
                 top_point_list.append((int(v)))
                 if len(distance_list) > 0:
                     distance_list.append(int(v) - distance_list[-1])
@@ -421,7 +496,7 @@ class LED_admin():
 
     def sparkel(self, f='h', l='h', s='h'):
         new_freq = 2
-        freq_list_full = (1.64, 1.25, 1.117, 1, 0.8, 0.5, 0.33, 0.1)
+        freq_list_full = (2, 1.64, 1.25, 1.117, 1, 0.8, 0.5, 0.33, 0.1)
         freq_list = freq_list_full[:]
         def sparkel_func(timer):
             level = self.sparkel_level                        
@@ -516,20 +591,20 @@ ALARM_DELETE_ID = 'ALD'
     
     
 class BT_processor():
-    key = private_key.key
-    allowed_central_list = MAC_hash_list.hashlist
-
     def __init__(self):
         self.MAC_check = False
         self.CRC_check = False
         self.command_counter_check = False
         self.payload_split = []
         self.payload_decrypted = ''
-        with open('command_counter.json', 'r') as f:
-            self.command_counter = json.loads(f.read())
-            print(f'command_counter: {self.command_counter} \n')
+        #with open('command_counter.json', 'r') as f:
+            #self.command_counter = json.loads(f.read())
+            #print(f'command_counter: {self.command_counter} \n')
 
-        #CRC_POLY = 0xEDB88320
+
+        self.key = D.bt_dict['key']
+        self.allowed_central_list = [m for m in D.bt_dict['MACs']] # Retaining only last 80 chars for each MAC. # [:80]
+        CRC_POLY = 0xEDB88320
         self.CRC_table = array.array('L')
         for byte in range(256):
             crc = 0
@@ -546,10 +621,9 @@ class BT_processor():
         led_err.duty_u16(int(65535))
         led_ok.duty_u16(int(0))
         
-    def MAC_whitelist_check(self, MAC_address):
+    def MAC_whitelist_check(self):
         self.MAC_check = False
-        if hashlib.sha256(MAC_address).digest() in self.allowed_central_list:
-            print(f'MAC_whitelist_check:: Central address verified, {MAC_address}')
+        if self.MAC_address_hash in self.allowed_central_list:  # [:80]
             self.MAC_check = True
 
     def decrypt(self, cmd):
@@ -585,10 +659,12 @@ class BT_processor():
         ''' Security measure. Receiver expects to receive a counter value for each command that is higher than the own one.
         This prevents a previously captured stream to be accepted when resent. It matters not how much higher so in case
         a previously failed communication attempt does not lock up the receiver. '''
+
+        self.command_counter = D.bt_dict['hosts'][self.MAC_address_hash]['counter']  # [:80]
         cmd_d = self.payload_split
         print(f'counter_integrity_check:: cmd: {self.payload_decrypted}, cmd_d: {cmd_d}')
         try:
-            current_counter = self.command_counter[cmd_d[0][:3]]
+            current_counter = int(self.command_counter[cmd_d[0][:3]])
         except KeyError:
             print(f'counter_integrity_check:: command not found for {cmd_d}')
             self.command_counter_check = False
@@ -597,6 +673,7 @@ class BT_processor():
         self.command_counter_check = current_counter < counter_rx
         if self.command_counter_check:
             self.command_counter[cmd_d[0][:3]] = counter_rx # Possible issue. In Memory, this var is being changed. Upon next succesful pass on another command, it is written to file still. Not goood.   
+
     
     def parse(self):
         d = self.payload_split
@@ -685,25 +762,27 @@ class BT_processor():
             return 1
         return 0
 
-
-
     def process(self, MAC_address, payload):
-        self.MAC_whitelist_check(MAC_address) # Checking MAC address against white list.
+        self.MAC_address = MAC_address
+        self.MAC_address_hash = str(hashlib.sha256(MAC_address).digest())
+        print(f'process:: MAC_address:{self.MAC_address}')
+        print(f'process:: MAC_address_hash:{self.MAC_address_hash}')
+        self.MAC_whitelist_check() # Checking MAC address against white list.
         if not self.MAC_check: 
-            self.error_handler('MAC_WHITELIST', (MAC_address, payload))
+            self.error_handler('MAC_WHITELIST', (payload))
             return 0
         self.payload_decrypted = self.decrypt(payload) # Decrypt, if MAC is ok.
         self.payload_split = self.payload_decrypted.split(':')
         self.check_crc() # Checking CRC. If decryption went wrong it should be caught here.
         if not self.CRC_check:
-            self.error_handler('CRC', (MAC_address))
+            self.error_handler('CRC')
             return 0
         self.counter_integrity_check() # Checking received cmd counter against own counter. Rx should be higher than own.
         if not self.command_counter_check:
-            self.error_handler('COMMAND_COUNTER', (MAC_address))
+            self.error_handler('COMMAND_COUNTER')
             return 0
         if not self.parse():
-            self.error_handler('NOT_A_COMMAND', (MAC_address))
+            self.error_handler('NOT_A_COMMAND')
             return 0
         led_err.duty_u16(int(0))
         led_ok.duty_u16(int(65535))
@@ -715,11 +794,16 @@ class BT_processor():
 BT = BT_processor()
 
 rx_data = bytes()
+
+
+print('Ready now...\n')
+
 while True:
     while uart.any() > 0:
         if len(payload_list) and data_change:
             data_change = False
-            BT.process(central_address, payload_list[-1])
+            if BT.process(central_address, payload_list[-1]):
+                D.store_data()
 
         in_data = uart.read(1)
         rx_data += in_data
@@ -762,3 +846,5 @@ while True:
                 #print(f'wholeframe: {wholeframe}')
                 
             
+
+
