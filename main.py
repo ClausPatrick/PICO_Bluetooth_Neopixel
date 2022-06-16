@@ -11,7 +11,7 @@ import hashlib
 
 file = "bt_dict.txt"
 file2 = "bt_dict.txt"
-
+NUM_LEDS = 57
 
 class bt_dict_processor():
     '''Handles storage for data pertaining to Clock and BT class. Absence of some m_python libs some wrangling is done to safe the nested dicts
@@ -30,9 +30,6 @@ class bt_dict_processor():
     def fetch_data(self):
         with open(file, 'r') as f:
             lines = f.readlines()
-        print('fetch_data:: lines: \n')
-        for l in lines:
-            print(l.rstrip("\r"))
         self.lines = [l.strip('\n') for l in lines]
         self.key = self.lines[0].strip()
         bt_dict = {}
@@ -49,8 +46,6 @@ class bt_dict_processor():
             if len_clean == 2:
                 bt_dict['alarm_list'][alarm_id][clean[0]] = clean[1]
         host_names = self.lines[2].replace(' ', '').strip("\r").split(',')
-        print(f'fetch_data:: host_names: {host_names}')
-        
         bt_dict['host_names'] = host_names
         how_many_hosts = len(host_names)
         bt_dict['hosts'] = {}
@@ -68,13 +63,7 @@ class bt_dict_processor():
             bt_dict['hosts'][hash_mac]['host_name'] = name.rstrip("\n")
             bt_dict['hosts'][hash_mac]['counter'] = counter_list
         self.bt_dict.update(bt_dict) # Merging local dict to class dict.
-        print('fetch_data::\n')
-        for k, v in self.bt_dict.items():
-            print(k, v)
-        print()
-        
 
-    
     def store_data(self):
         how_many_hosts = len(self.bt_dict['host_names'])
         with open(file2, 'w') as f:
@@ -89,28 +78,9 @@ class bt_dict_processor():
                 f.write(str(name) + '\n')
                 f.write(str(mac) + '\n')
                 f.write(str(counter) + '\n') # command_counter_template
-
-
     
 D = bt_dict_processor()
 D.fetch_data()
-
-# Loading external values.
-
-NUM_LEDS = 57
-
-CRC_POLY = 0xEDB88320
-CRC_table = array.array('L')
-for byte in range(256):
-    crc = 0
-    for bit in range(8):
-        if (byte ^ crc) & 1:
-            crc = (crc >> 1) ^ CRC_POLY
-        else:
-            crc >>= 1
-        byte >>= 1
-    CRC_table.append(crc)
-
 
 # Setting up HW peripheries.   
 led_onboard = machine.Pin(25, machine.Pin.OUT)
@@ -119,7 +89,6 @@ led_onboard.value(1)
 uart = machine.UART(0, 9600, tx=Pin(12), rx=Pin(13), bits=8, parity=None, stop=1)
 cd = CD4094_class.CD4094()
 
-
 led_ok = machine.PWM(machine.Pin(5))
 led_err = machine.PWM(machine.Pin(6))
 draw_sw = machine.Pin(1, machine.Pin.IN, machine.Pin.PULL_UP)
@@ -127,8 +96,6 @@ led_ok.freq(1000)
 led_err.freq(1000)
 led_ok.duty_u16(65535)
 led_err.duty_u16(0)
-
-
 
 # PIO program to interface with ws2812
 @asm_pio(sideset_init=PIO.OUT_LOW, out_shiftdir=PIO.SHIFT_LEFT, autopull=True, pull_thresh=24)
@@ -152,7 +119,6 @@ sm = rp2.StateMachine(0, ws2812, freq=8_000_000, sideset_base=Pin(0))
 # Start the StateMachine, it will wait for data on its FIFO.
 sm.active(1)
 
-
 class Clock():
     def __init__(self):
         self.ticks = 0
@@ -164,9 +130,7 @@ class Clock():
         self.enable_display_daylight_adjustment = True
         self.alarm_flasher_frequency = 4
         self.alarm_list = D.bt_dict['alarm_list']
-        
-
-        
+                
     @staticmethod
     def time_to_ticks(data):
         data = ('000000' + (data + '00')[:6])[-6:] # Ensuring string is always 6 in len.
@@ -233,8 +197,7 @@ class Clock():
         else:
             ticks_counter = 10
             print(f'set_alarm:: No time specified. Going with default: {ticks_counter} sec')
-        D.store_data()
-            
+        D.store_data()            
             
     def delete_alarm(self, abs_time=None, rel_time=None):
         if abs_time != None:
@@ -249,8 +212,7 @@ class Clock():
         elif rel_time != None:
             self.rel_time = int(rel_time)
             ticks_counter = self.rel_time # Not implemented yet.                     
-        D.store_data()
-            
+        D.store_data()            
             
     def pwm_flicker(self, sev=0):
         self.display_current_time(pwm=(0xffff // ((self.action_ticker%2)+1)))
@@ -273,8 +235,7 @@ class Clock():
         
         #self.expiration_ticker_timer.init(freq=1/dur, mode=Timer.ONE_SHOT, callback=expiration_ticker)
         print(f'start flashing {dur}, {self.alarm_flasher_frequency}')
-        self.alarm_active = True
-                  
+        self.alarm_active = True                  
             
         def flash_ticker(timer):
             if self.action_ticker < self.flash_ticks and self.alarm_active:
@@ -300,7 +261,6 @@ class Clock():
         self.flash_ticker_timer = Timer()
         self.flash_ticker_timer.init(freq=self.alarm_flasher_frequency, mode=Timer.PERIODIC, callback=flash_ticker) 
 
-    
     def display_current_time(self, pwm=None):
         #print(f'display_current_time:: {self.current_time[:4]}, {self.display_pwm}')
         if pwm == None:
@@ -322,9 +282,6 @@ class Clock():
         self.display_pwm = data
         print(f'set_pwm:: PWM set to: {data}')
         self.display_current_time()
-        
-
-
 
 class LED_admin():
     def __init__(self, NUM_LEDS=57):
@@ -345,7 +302,6 @@ class LED_admin():
         self.z_all = self.z_00 + self.z_01 + self.z_02 + self.z_ff
         self.sparkel_level = None
         
-
     @staticmethod
     def rgb_formatter(data):
         '''Array of 3 RGB data converted to fit Neopixel format (GgRrBb where character-pair is 1 byte size). Error return -1
@@ -525,10 +481,7 @@ class LED_admin():
                 new_freq = freq_list[random.randrange(len(freq_list))]
                 self.sparkel_timer.init(freq=new_freq, mode=Timer.PERIODIC, callback=sparkel_func)
         self.sparkel_timer = Timer()
-        self.sparkel_timer.init(freq=2, mode=Timer.PERIODIC, callback=sparkel_func)     
-
-
-        
+        self.sparkel_timer.init(freq=2, mode=Timer.PERIODIC, callback=sparkel_func)           
 
 
 # Init routine:
@@ -545,9 +498,7 @@ pixels.set_zone(zone_nr=3, rgb_str='402005')
 utime.sleep_ms(5)
 
 pixels.set_gradient(('0', '000000', '10', '00ff00', '20', 'ff0000', '30', 'ff00ff', '40', '00ffff', '50', 'ffffff'))
-
 drawer_opened = 0
-
 
 def draw_routine(pin):
     global drawer_opened
@@ -589,7 +540,6 @@ ALARM_ID = 'ALM'
 COSTUM_DISPLAY_ID = 'DSP'
 ALARM_DELETE_ID = 'ALD'
     
-    
 class BT_processor():
     def __init__(self):
         self.MAC_check = False
@@ -600,7 +550,6 @@ class BT_processor():
         #with open('command_counter.json', 'r') as f:
             #self.command_counter = json.loads(f.read())
             #print(f'command_counter: {self.command_counter} \n')
-
 
         self.key = D.bt_dict['key']
         self.allowed_central_list = [m for m in D.bt_dict['MACs']] # Retaining only last 80 chars for each MAC. # [:80]
@@ -643,7 +592,7 @@ class BT_processor():
         def crc32(string):
             v = 0xffffffff
             for c in string:
-                v = CRC_table[(ord(c) ^ v) & 0xff] ^ (v >> 8)
+                v = self.CRC_table[(ord(c) ^ v) & 0xff] ^ (v >> 8)
             return -1 - v
         d = self.payload_split
         cmd = self.payload_decrypted
@@ -653,7 +602,6 @@ class BT_processor():
         crc_result = crc32(message) & 0xffffffff
         self.CRC_check = crc_result == crc_received
         print(f'check_crc:: cmd: {self.payload_decrypted}, rx: {crc_received}, m: {message}, res: {crc_result}, ?: {self.CRC_check}')
-
 
     def counter_integrity_check(self):
         ''' Security measure. Receiver expects to receive a counter value for each command that is higher than the own one.
@@ -674,7 +622,6 @@ class BT_processor():
         if self.command_counter_check:
             self.command_counter[cmd_d[0][:3]] = counter_rx # Possible issue. In Memory, this var is being changed. Upon next succesful pass on another command, it is written to file still. Not goood.   
 
-    
     def parse(self):
         d = self.payload_split
         command = d[0]
@@ -792,9 +739,7 @@ class BT_processor():
         return 1
 
 BT = BT_processor()
-
 rx_data = bytes()
-
 
 print('Ready now...\n')
 
@@ -804,10 +749,9 @@ while True:
             data_change = False
             if BT.process(central_address, payload_list[-1]):
                 D.store_data()
-
         in_data = uart.read(1)
         rx_data += in_data
-
+        
         if connect_syntax in rx_data and not is_connected:
             led_err.duty_u16(int(65535))
             led_ok.duty_u16(int(10000))
