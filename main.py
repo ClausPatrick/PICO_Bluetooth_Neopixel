@@ -8,6 +8,7 @@ import random
 import CD4094_class
 import json
 import hashlib
+import re
 
 file = "bt_dict.txt"
 file2 = "bt_dict.txt"
@@ -36,8 +37,8 @@ class bt_dict_processor():
         bt_dict['key'] = self.key
         bt_dict['alarm_list'] = {}
         chunks = self.lines[1].split(',') # Reassembling the alamr_list dictionary.
-        for chunk in chunks:
-            clean = chunk.replace('{', '').replace('}', '').replace(' ', '').rstrip("\n").split(':')
+        for chunk in chunks:            
+            clean = re.sub('[^A-Za-z0-9:]+', '', chunk).split(':')
             len_clean = len(clean)
             if len_clean == 3:
                 alarm_id = int(clean[0])
@@ -55,8 +56,8 @@ class bt_dict_processor():
             name = self.lines[host_index + 0]
             hash_mac = str(self.lines[host_index + 1].rstrip("\r"))
             print(f'fetch_data:: hash_mac:{hash_mac}')
-            counter = self.lines[host_index + 2]
-            counter = counter.replace(' ', '').replace('{', '').replace('}', '').replace("'", "").rstrip("\n").split(',')
+            counter = self.lines[host_index + 2]    
+            counter = re.sub('[^A-Za-z0-9:,]+', '', counter).split(',')
             counter_list = {i.split(':')[0]:i.split(':')[1] for i in counter}
             bt_dict['MACs'].append(hash_mac) # [:80]
             bt_dict['hosts'][hash_mac] = {}
@@ -85,10 +86,8 @@ D.fetch_data()
 # Setting up HW peripheries.   
 led_onboard = machine.Pin(25, machine.Pin.OUT)
 led_onboard.value(1)
-
 uart = machine.UART(0, 9600, tx=Pin(12), rx=Pin(13), bits=8, parity=None, stop=1)
 cd = CD4094_class.CD4094()
-
 led_ok = machine.PWM(machine.Pin(5))
 led_err = machine.PWM(machine.Pin(6))
 draw_sw = machine.Pin(1, machine.Pin.IN, machine.Pin.PULL_UP)
@@ -114,10 +113,10 @@ def ws2812():
     wrap()
     
 # Create the StateMachine with the ws2812 program, outputting on Pin(0).
-sm = rp2.StateMachine(0, ws2812, freq=8_000_000, sideset_base=Pin(0))
+PIO_state_machine = rp2.StateMachine(0, ws2812, freq=8_000_000, sideset_base=Pin(0))
 
 # Start the StateMachine, it will wait for data on its FIFO.
-sm.active(1)
+PIO_state_machine.active(1)
 
 class Clock():
     def __init__(self):
@@ -133,23 +132,25 @@ class Clock():
                 
     @staticmethod
     def time_to_ticks(data):
+        '''Expects string representing TIME ex:"123456" for 12:34:56 and returning how many seconds away from midnight'''
         data = ('000000' + (data + '00')[:6])[-6:] # Ensuring string is always 6 in len.
         h_m_s = (data[0:2], data[2:4], data[4:6])
         time_coeff = (60**2, 60, 1)
         ticks_new = sum(list(map(lambda x, y: int(x) * y, h_m_s, time_coeff)))
-        #print(f'time_to_ticks:: data: {data},  h_m_s: {h_m_s}, ticks_new: {ticks_new}')
         return ticks_new
     
     @staticmethod
     def time_formatter(ticks):
+        '''Expects how many seconds away from midnight and returns time format in string like 123456.'''
         ticks = int(ticks)
         h = ('00' + str(ticks // 60**2))[-2:]
         m = ('00' + str((ticks % 60**2)//60))[-2:]
         s = ('00' + str(ticks % 60))[-2:]
         return h + m + s   
     
-    def ticker(self):               
-        def ticker_func(timer):            
+    def ticker(self):
+        '''Local function ticks every second and checks self.alar_list for maches to issue alarm notification.'''
+        def ticker_func(timer):
             self.ticks = (self.ticks + 1) % (24 * 60 * 60)
             self.current_time = self.time_formatter(self.ticks)
             self.display_current_time()
@@ -161,23 +162,22 @@ class Clock():
                     with open('alarm_list.log', 'w') as f:
                         json.dump(self.alarm_list, f)
                     print(f'ticker_func:: Alarm entry was not persistant so it got removed. Alarm entries: {len(self.alarm_list)}')
-
         self.ticker_timer = Timer()
         self.ticker_timer.init(freq=1, mode=Timer.PERIODIC, callback=ticker_func)
         print(f'ticker:: ticks: {self.ticks}, current_time: {self.current_time}')
 
     def clock_sync(self, data):
-        print(f'clock_sync:: data: {data}')
+        '''Central issues sync request and provides the current time. Ticks are calculated and display updated'''
         assert len(data) == 6 and isinstance(data, str)
         new_ticks = self.time_to_ticks(data)
         print(f'clock_sync:: data:{data}, ticks: {new_ticks}')
         self.sync_buffer = data
         self.ticks = new_ticks
         self.current_time = self.time_formatter(self.ticks)
-        self.display_current_time()
-        
+        self.display_current_time()        
             
     def set_alarm(self, severity=3, abs_time=None, rel_time=None, duration=5, persistence=False):
+        '''Invoked from BT central. Updates alarm_list and stores. '''
         if severity != None:
             self.severity = severity
         current_ticks = clock.ticks
@@ -205,7 +205,6 @@ class Clock():
             try:
                 print(f'delete_alarm:: Alarm {self.alarm_time_to_ticks} for {self.time_formatter(self.alarm_time_to_ticks)} deleted.')
                 del self.alarm_list[self.alarm_time_to_ticks]
-                
             except KeyError:
                 print(f'delete_alarm:: Alarm {self.alarm_time_to_ticks} for {self.time_formatter(self.alarm_time_to_ticks)} not found.')
             print(f'delete_alarm::: a:: alarm_time_to_ticks: {self.alarm_time_to_ticks}, current_ticks: {self.ticks}, time: {self.current_time}')
@@ -225,14 +224,13 @@ class Clock():
         return            
         
     def notify(self, alarm_dict):
+        '''Invoked by alarm_list and ticker matching in ticker. All actions are synced by flach_ticker()'''
         self.alarm_active = True
         sev = int(alarm_dict['severity'])
         dur = int(alarm_dict['duration'])
         self.flash_ticks = (dur * self.alarm_flasher_frequency) + 1
-        
         self.arr_buffer = pixels.arr
         print(f'Setting up timer: sev: {sev}, dur: {dur}, f: {1/dur}, {alarm_dict}')
-        
         #self.expiration_ticker_timer.init(freq=1/dur, mode=Timer.ONE_SHOT, callback=expiration_ticker)
         print(f'start flashing {dur}, {self.alarm_flasher_frequency}')
         self.alarm_active = True                  
@@ -241,13 +239,11 @@ class Clock():
             if self.action_ticker < self.flash_ticks and self.alarm_active:
                 self.action_ticker = self.action_ticker + 1
                 print(f'action_ticker:: {self.action_ticker}, {((dur * self.alarm_flasher_frequency) + 1)}, {dur}, {self.alarm_flasher_frequency}, {alarm_dict}')
-                if sev == 0:
-                    print(f'doing sev0 shit t: {self.action_ticker}')
+                if sev == 0:                    
                     self.gradient_flash()
                     self.pwm_flicker()
                 if sev == 1:
-                    self.pwm_flicker()
-                
+                    self.pwm_flicker()                
             else:                
                 self.flash_ticker_timer.deinit()
                 self.display_current_time(pwm=self.display_pwm)
@@ -282,6 +278,7 @@ class Clock():
         self.display_pwm = data
         print(f'set_pwm:: PWM set to: {data}')
         self.display_current_time()
+
 
 class LED_admin():
     def __init__(self, NUM_LEDS=57):
@@ -325,7 +322,7 @@ class LED_admin():
         return rgb
 
     def output_to_chain(self, data):
-        sm.put(data, 8)
+        PIO_state_machine.put(data, 8)
     
     def rgb_scaling(self):
         '''Performing a weighted sum of rgb_list, brightness and daylight. Result written into array arr.'''
@@ -357,7 +354,6 @@ class LED_admin():
             print(f'set_daylight:: pwm_adj: {pwm_adj}, {hex(pwm_adj)}')
             clock.set_pwm(pwm_adj)
 
-
     def drawer_closed(self):
         self.output_to_chain(self.arr)
     
@@ -380,20 +376,15 @@ class LED_admin():
         '''Sanity check'''
         if isinstance(rgb_in, int):
             rgb_in = ('000000' + str(hex(data)[2:]))[-6:]
-            #print(f'insist_int:: int: rgb_in: {rgb_in}')
         elif isinstance(rgb_in, str):
-            #print(f'insist_int:: str: rgb_in: {rgb_in}')
             rgb_in = rgb_in[2:4] + rgb_in[0:2] + rgb_in[4:6]                        
         elif isinstance(rgb_in, (list, tuple)):
             rgb_in = self.rgb_formatter(rgb_in)
             rgb_in = ('000000' + str(hex(rgb_in)[2:]))[-6:]
-            #print(f'insist_int:: list: rgb_in: {rgb_in}')
-            
         else:
             raise ValueError
         rgb_reform = rgb_in[0:2] + rgb_in[2:4] + rgb_in[4:6]
         rgb = int(rgb_reform, 16)
-        #print(f'insist_int:: else: rgb_in: {rgb_in}, rgb_reform: {rgb_reform}, rgb: {rgb}, {hex(rgb)}')
         return rgb
 
     def set_absolute(self, start, end, rgb_str):
@@ -414,11 +405,8 @@ class LED_admin():
         distance_list = []
         top_point_list = []
         rgb_top_list = []
-        #arr_new = array.array("I", [0 for _ in range(NUM_LEDS)])
         for i, v in enumerate(data): # Creating some lists that will make the process easier later.
-            if not i%2: #First comes cooridinates on LED line.
-                print(f'set_gradient:: {v}, {data}, {data[0]}, {int(data[0])}')
-                
+            if not i%2: #First comes cooridinates on LED line.          
                 top_point_list.append((int(v)))
                 if len(distance_list) > 0:
                     distance_list.append(int(v) - distance_list[-1])
@@ -428,19 +416,16 @@ class LED_admin():
                 rgb_tub = self.rgb_reformatter(v)
                 rgb_top_list.append(rgb_tub)
         for i, v in enumerate(distance_list):
-            print(f'distance_list: {i}, {v}')
             for l in range(v):
                 led_index = l + top_point_list[i-1]
                 start_point_rgb = rgb_top_list[i]
                 end_point_rgb = rgb_top_list[(i+1)%len(rgb_top_list)]        
                 if led_index < NUM_LEDS:
-                    new_rgb = list(map(lambda x, y: int(x + (((y - x)*l)/v)), start_point_rgb, end_point_rgb))
-                    #print(f'----led_index:: new_rgb: {new_rgb}, rgb_top_list: {start_point_rgb}, {end_point_rgb},') 
+                    new_rgb = list(map(lambda x, y: int(x + (((y - x)*l)/v)), start_point_rgb, end_point_rgb))                    
                     self.rgb_list[led_index] = self.rgb_formatter(new_rgb)
-                    #self.arr[led_index] = self.rgb_formatter(new_rgb)
         self.rgb_scaling()
         self.output_to_chain(self.arr)
-        print(f'set_gradient:: data: {data}')
+        #print(f'set_gradient:: data: {data}')
 
     def set_zone(self, zone_nr, rgb_str):
         '''Write RGB value on range of LEDs assigned to specific zone.'''
@@ -452,7 +437,7 @@ class LED_admin():
 
     def sparkel(self, f='h', l='h', s='h'):
         new_freq = 2
-        freq_list_full = (2, 1.64, 1.25, 1.117, 1, 0.8, 0.5, 0.33, 0.1)
+        freq_list_full = (1.64, 1.25, 1.117, 1, 0.8, 0.5, 0.33, 0.1, 0.08)
         freq_list = freq_list_full[:]
         def sparkel_func(timer):
             level = self.sparkel_level                        
@@ -481,7 +466,7 @@ class LED_admin():
                 new_freq = freq_list[random.randrange(len(freq_list))]
                 self.sparkel_timer.init(freq=new_freq, mode=Timer.PERIODIC, callback=sparkel_func)
         self.sparkel_timer = Timer()
-        self.sparkel_timer.init(freq=2, mode=Timer.PERIODIC, callback=sparkel_func)           
+        self.sparkel_timer.init(freq=1, mode=Timer.PERIODIC, callback=sparkel_func)           
 
 
 # Init routine:
@@ -500,7 +485,10 @@ utime.sleep_ms(5)
 pixels.set_gradient(('0', '000000', '10', '00ff00', '20', 'ff0000', '30', 'ff00ff', '40', '00ffff', '50', 'ffffff'))
 drawer_opened = 0
 
+
+
 def draw_routine(pin):
+    '''External interrupt routine'''
     global drawer_opened
     utime.sleep_ms(10)
     if drawer_opened != draw_sw.value():
@@ -541,18 +529,17 @@ COSTUM_DISPLAY_ID = 'DSP'
 ALARM_DELETE_ID = 'ALD'
     
 class BT_processor():
+    '''Once BT session is closed, both MAC and DATA are processed here. 
+    If 1 is returned all security measures have passed, 
+    the command is handled and all registers are updated'''
     def __init__(self):
         self.MAC_check = False
         self.CRC_check = False
         self.command_counter_check = False
         self.payload_split = []
         self.payload_decrypted = ''
-        #with open('command_counter.json', 'r') as f:
-            #self.command_counter = json.loads(f.read())
-            #print(f'command_counter: {self.command_counter} \n')
-
         self.key = D.bt_dict['key']
-        self.allowed_central_list = [m for m in D.bt_dict['MACs']] # Retaining only last 80 chars for each MAC. # [:80]
+        self.allowed_central_list = [m for m in D.bt_dict['MACs']] 
         CRC_POLY = 0xEDB88320
         self.CRC_table = array.array('L')
         for byte in range(256):
@@ -606,7 +593,8 @@ class BT_processor():
     def counter_integrity_check(self):
         ''' Security measure. Receiver expects to receive a counter value for each command that is higher than the own one.
         This prevents a previously captured stream to be accepted when resent. It matters not how much higher so in case
-        a previously failed communication attempt does not lock up the receiver. '''
+        a previously failed communication attempt does not lock up the receiver. The bt_dict allows for each connected and
+        allowed central to retain its independent counter settings.'''
 
         self.command_counter = D.bt_dict['hosts'][self.MAC_address_hash]['counter']  # [:80]
         cmd_d = self.payload_split
@@ -712,8 +700,6 @@ class BT_processor():
     def process(self, MAC_address, payload):
         self.MAC_address = MAC_address
         self.MAC_address_hash = str(hashlib.sha256(MAC_address).digest())
-        print(f'process:: MAC_address:{self.MAC_address}')
-        print(f'process:: MAC_address_hash:{self.MAC_address_hash}')
         self.MAC_whitelist_check() # Checking MAC address against white list.
         if not self.MAC_check: 
             self.error_handler('MAC_WHITELIST', (payload))
@@ -733,9 +719,7 @@ class BT_processor():
             return 0
         led_err.duty_u16(int(0))
         led_ok.duty_u16(int(65535))
-        with open('command_counter.json', 'w') as f:
-            json.dump(self.command_counter, f)
-            print(f'process:: command_counter saved')
+        print('BT_processor::: Process:: BT session handled succesfully. All registers updated.\n')
         return 1
 
 BT = BT_processor()
@@ -766,7 +750,7 @@ while True:
                 is_MAC = False
                 is_data = True
                 central_address = rx_data
-                print(f'address: {central_address}')
+                print(f'BT session initiated: address: {central_address}')
                 rx_data = bytes()
         if is_connected and is_data:
             if disconnect_syntax in rx_data:
