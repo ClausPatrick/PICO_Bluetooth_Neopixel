@@ -1,12 +1,11 @@
 import array, utime, time
-from machine import Pin, Timer, I2C
+from machine import Pin, Timer
 import rp2
 from rp2 import PIO, StateMachine, asm_pio
 from time import sleep
 import re
 import random
 import CD4094_class
-import json
 import hashlib
 import re
 
@@ -129,6 +128,8 @@ class Clock():
         self.enable_display_daylight_adjustment = True
         self.alarm_flasher_frequency = 4
         self.alarm_list = D.bt_dict['alarm_list']
+        self.day_counter = 0
+        self.synced_state = False
                 
     @staticmethod
     def time_to_ticks(data):
@@ -152,6 +153,8 @@ class Clock():
         '''Local function ticks every second and checks self.alar_list for maches to issue alarm notification.'''
         def ticker_func(timer):
             self.ticks = (self.ticks + 1) % (24 * 60 * 60)
+            if self.ticks == 0:
+                self.day_counter = self.day_counter + 1
             self.current_time = self.time_formatter(self.ticks)
             self.display_current_time()
             if self.ticks in self.alarm_list:
@@ -159,8 +162,8 @@ class Clock():
                 self.notify(self.alarm_list[self.ticks])                
                 if not self.alarm_list[self.ticks]['persistence']:
                     del self.alarm_list[self.ticks]
-                    with open('alarm_list.log', 'w') as f:
-                        json.dump(self.alarm_list, f)
+                    D.store_data()
+
                     print(f'ticker_func:: Alarm entry was not persistant so it got removed. Alarm entries: {len(self.alarm_list)}')
         self.ticker_timer = Timer()
         self.ticker_timer.init(freq=1, mode=Timer.PERIODIC, callback=ticker_func)
@@ -172,9 +175,17 @@ class Clock():
         new_ticks = self.time_to_ticks(data)
         print(f'clock_sync:: data:{data}, ticks: {new_ticks}')
         self.sync_buffer = data
+        old_ticks = self.ticks
         self.ticks = new_ticks
         self.current_time = self.time_formatter(self.ticks)
-        self.display_current_time()        
+        self.display_current_time()
+        time_divergence_data = (old_ticks, new_ticks, self.day_counter, (old_ticks-new_ticks))
+        if self.synced_state:
+            with open('time_divergence_data.log', 'a') as k:
+                k.write(str(time_divergence_data) + '\n')
+            self.day_counter = 0
+        self.synced_state = True
+        
             
     def set_alarm(self, severity=3, abs_time=None, rel_time=None, duration=5, persistence=False):
         '''Invoked from BT central. Updates alarm_list and stores. '''
@@ -258,7 +269,6 @@ class Clock():
         self.flash_ticker_timer.init(freq=self.alarm_flasher_frequency, mode=Timer.PERIODIC, callback=flash_ticker) 
 
     def display_current_time(self, pwm=None):
-        #print(f'display_current_time:: {self.current_time[:4]}, {self.display_pwm}')
         if pwm == None:
             pwm = self.display_pwm
         cd.transmit(self.current_time[:4], red=0, pwm_duty=(pwm))
