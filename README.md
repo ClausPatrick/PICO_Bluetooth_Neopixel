@@ -84,7 +84,12 @@ The programs loops around UART receiption. String matching on the inbound UART d
 
 
 
+![20230130_112420](https://user-images.githubusercontent.com/44665589/215466223-b65e01a6-42e7-4f4b-a1b4-130c81ee8075.jpg)
 
+
+
+
+https://user-images.githubusercontent.com/44665589/215466243-dce9bb75-1a24-40f2-bdfb-70dcbc607201.mp4
 
 
 
