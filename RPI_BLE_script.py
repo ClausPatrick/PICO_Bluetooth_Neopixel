@@ -213,6 +213,7 @@ def send_message(message, encrypted):
         with open('bt_ble_command_counter.log', 'w') as f:
             json.dump(command_counter, f)
             #print(f'Updating command_counter.log: {command_counter} \n')
+        hm.disconnect()
         return 1
     else:
         logging.error(f'Message not sent: {message}, {encrypted} due to {hm.error}.')
